@@ -109,9 +109,11 @@ function fileAsDataUrls(file:File){
   image.onerror=()=>{URL.revokeObjectURL(url);reject(new Error("Nie udało się przygotować zdjęcia"))};image.src=url;
  });
 }
-async function readWithAi(file:File){
- if(file.size>4*1024*1024)throw new Error("Plik jest większy niż 4 MB");
- const response=await fetch("/.netlify/functions/extract-invoice",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({dataUrls:await fileAsDataUrls(file),mimeType:file.type,fileName:file.name})});
+async function readWithAi(files:File[]){
+ if(files.length>1&&files.some(file=>file.type.includes("pdf")))throw new Error("PDF wczytaj osobno; kilka stron JPG zaznacz jednocześnie");
+ const dataUrls=(await Promise.all(files.map(fileAsDataUrls))).flat();
+ if(dataUrls.reduce((sum,value)=>sum+value.length,0)>5.5*1024*1024)throw new Error("Łączny rozmiar stron jest zbyt duży. Użyj PDF lub mniejszych zdjęć.");
+ const response=await fetch("/.netlify/functions/extract-invoice",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({dataUrls,mimeType:files[0].type,fileName:files.map(file=>file.name).join(", ")})});
  const data=await response.json();
  if(!response.ok)throw new Error(data?.error||"AI nie odczytało faktury");
  if(!Array.isArray(data.items)||!data.items.length)throw new Error("AI nie znalazło pozycji");
@@ -158,12 +160,13 @@ export default function Home(){
   }
   return result;
  }
- async function read(file:File){
-  setBusy(true);setProgress(4);setFileName(file.name);setMessage("Przygotowuję dokument…");
+ async function read(files:File[]){
+  if(!files.length)return;const file=files[0];
+  setBusy(true);setProgress(4);setFileName(files.length===1?file.name:`${files.length} strony: ${files.map(item=>item.name).join(", ")}`);setMessage("Przygotowuję dokument…");
   try{
    try{
     setProgress(12);setMessage("AI odczytuje wszystkie pozycje faktury…");
-    const aiRows=await readWithAi(file);
+    const aiRows=await readWithAi(files);
     setRows(aiRows);setProgress(100);setMessage(`AI rozpoznało ${aiRows.length} pozycji. Sprawdź dane.`);
     return;
    }catch(aiError){
@@ -202,8 +205,9 @@ export default function Home(){
    content:[
     {text:"ZESTAWIENIE TOWARÓW I USŁUG",fontSize:15,bold:true,margin:[0,0,0,6]},
     {text:`Źródło: ${fileName||"dane wprowadzone ręcznie"}`,fontSize:9,color:"#526174",margin:[0,0,0,14]},
-    {table:{headerRows:1,widths:[28,"*",45,48],body},layout:{fillColor:(row:number)=>row===0?"#ebeff4":null}}
+    {table:{headerRows:1,widths:[28,"*",45,48],body,dontBreakRows:true},layout:{fillColor:(row:number)=>row===0?"#ebeff4":null}}
    ],
+   footer:(currentPage:number,pageCount:number)=>({text:`Strona ${currentPage} z ${pageCount}`,alignment:"right",margin:[0,10,36,0],fontSize:8,color:"#65748a"}),
    defaultStyle:{font:"Roboto",fontSize:9}
   }).download(`zestawienie-${new Date().toISOString().slice(0,10)}.pdf`);
  }
@@ -212,7 +216,7 @@ export default function Home(){
   <section className="workspace">
    <aside className="upload-card"><div className="step">KROK 1</div><h2>Wczytaj fakturę</h2>
     <button className="dropzone" onClick={()=>input.current?.click()} disabled={busy}>{fileName?<FileText size={34}/>:<FileImage size={34}/>}<strong>{fileName||"Wybierz JPG lub PDF"}</strong><span>{fileName?"Kliknij, aby zmienić dokument":"Wyraźny skan daje najlepszy wynik"}</span></button>
-    <input ref={input} hidden type="file" accept="image/jpeg,image/png,application/pdf" onChange={e=>e.target.files?.[0]&&read(e.target.files[0])}/>
+    <input ref={input} hidden multiple type="file" accept="image/jpeg,image/png,application/pdf" onChange={e=>e.target.files&&read(Array.from(e.target.files))}/>
     <div className="status"><div>{busy&&<LoaderCircle className="spin" size={18}/>}<span>{message}</span></div>{(busy||progress>0)&&<div className="progress"><i style={{width:`${progress}%`}}/></div>}</div>
     <div className="tip"><strong>Ważne</strong><p>Po rozpoznaniu sprawdź nazwy i ilości. Program daje etap kontroli przed utworzeniem PDF.</p></div>
    </aside>
