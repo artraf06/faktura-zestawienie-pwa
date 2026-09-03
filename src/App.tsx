@@ -96,6 +96,19 @@ function sequenceRows(tableRows:Row[],names:Map<number,string>){
  }
  return ordered;
 }
+function fileAsDataUrl(file:File){
+ return new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=reject;reader.readAsDataURL(file)});
+}
+async function readWithAi(file:File){
+ if(file.size>4*1024*1024)throw new Error("Plik jest większy niż 4 MB");
+ const response=await fetch("/.netlify/functions/extract-invoice",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({dataUrl:await fileAsDataUrl(file),mimeType:file.type,fileName:file.name})});
+ const data=await response.json();
+ if(!response.ok)throw new Error(data?.error||"AI nie odczytało faktury");
+ if(!Array.isArray(data.items)||!data.items.length)throw new Error("AI nie znalazło pozycji");
+ return data.items.map((item:{lp?:number;name?:string;quantity?:string;unit?:string},index:number)=>({
+  id:id(),lp:index+1,name:String(item.name||"").trim(),quantity:String(item.quantity||"").trim(),unit:String(item.unit||"").trim()
+ }));
+}
 export default function Home(){
  const input=useRef<HTMLInputElement>(null);
  const [rows,setRows]=useState<Row[]>([]),[fileName,setFileName]=useState(""),[busy,setBusy]=useState(false),[progress,setProgress]=useState(0),[message,setMessage]=useState("Wczytaj fakturę, aby rozpocząć");
@@ -138,6 +151,15 @@ export default function Home(){
  async function read(file:File){
   setBusy(true);setProgress(4);setFileName(file.name);setMessage("Przygotowuję dokument…");
   try{
+   try{
+    setProgress(12);setMessage("AI odczytuje wszystkie pozycje faktury…");
+    const aiRows=await readWithAi(file);
+    setRows(aiRows);setProgress(100);setMessage(`AI rozpoznało ${aiRows.length} pozycji. Sprawdź dane.`);
+    return;
+   }catch(aiError){
+    console.warn("Odczyt AI niedostępny, uruchamiam OCR",aiError);
+    setMessage("AI jest chwilowo niedostępne — uruchamiam odczyt lokalny…");setProgress(5);
+   }
    let text=await nativePdfText(file);
    if(text.length<150||!/(nazwa|towaru|ilość|jedn)/i.test(text)){
     const pages=await images(file),module=await import("tesseract.js"),T=module.default;
