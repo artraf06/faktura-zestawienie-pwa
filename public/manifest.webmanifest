@@ -1,0 +1,1 @@
+{"name":"Faktura → Zestawienie","short_name":"Faktury","description":"Odczyt pozycji z faktur i eksport zestawienia PDF","start_url":"/","display":"standalone","background_color":"#eef2f7","theme_color":"#10233d","icons":[{"src":"/favicon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]}
