@@ -46,15 +46,17 @@ async function prepareNameColumn(source:string){
  });
 }
 function parseNames(text:string){
- const names:string[]=[];
+ const names=new Map<number,string>();let lastLp=0;
  for(const raw of text.split(/\n+/).map(v=>v.replace(/\s+/g," ").trim()).filter(Boolean)){
   if(/^(lp\.?|nazwa towaru|nr konta)/i.test(raw))continue;
-  const match=raw.match(/^[|\[({\s-]*[A-Z]?\s*(\d{1,2})[|.)\]}\s-]+(.{3,})$/i);
+  let match=raw.match(/^[|\[({\s-]*(\d{1,3})[|.)\]}\s-]*(.{3,})$/i);
+  if(!match){const damaged=raw.match(/^[SQOIl|]([0-9]{1,2})[I|.)\]}\s-]*(.{3,})$/i);if(damaged)match=[damaged[0],damaged[1],damaged[2]]}
   if(match){
+   const lp=Number(match[1]);if(!lp||lp>999)continue;
    const name=match[2].replace(/\s+\d+(?:[.,-]\d+){2,}.*$/," ").replace(/[|]+$/," ").trim();
-   if(name.length>2)names.push(name);
-  }else if(names.length&&raw.length>3&&!/\b(szt|kpl|mb|netto|brutto|vat)\b/i.test(raw)){
-   names[names.length-1]+=" "+raw.replace(/[|]+$/," ").trim();
+   if(name.length>2){names.set(lp,name);lastLp=lp}
+  }else if(lastLp&&raw.length>3&&!/\b(szt|kpl|mb|netto|brutto|vat)\b/i.test(raw)){
+   names.set(lastLp,`${names.get(lastLp)||""} ${raw.replace(/[|]+$/," ").trim()}`.trim());
   }
  }
  return names;
@@ -64,6 +66,7 @@ function parseText(text:string){
  const rows:Row[]=[];
  for(const raw of text.split(/\n+/).map(x=>x.replace(/\s+/g," ").trim()).filter(Boolean)){
   if(ignored.test(raw)||raw.length<4)continue;
+  const lpMatch=raw.match(/^[|\s[(]*(\d{1,3})[.)|\]/\\-]*\s*/);
   const line=raw.replace(/^[|\s[(]*(\d{1,3})[.)|\]/\\-]*\s*/,"");
   // Pierwsza para „liczba + jednostka” wyznacza kolumny Ilość i Jedn.m.
   // Tekst po jednostce (ceny, VAT, wartości) jest ignorowany.
@@ -71,10 +74,24 @@ function parseText(text:string){
   if(m){
    // Usuń końcowy symbol PKWiU, także gdy OCR poprzedził go literą lub kreską.
    const name=m[1].replace(/\s+[a-z|]?\d{1,2}(?:[.:-]\d{1,2}){2,}(?:[.:-]\d{1,2})*\s*$/i,"").replace(/[|[]+$/,"").trim();
-   if(name.length>2)rows.push({id:id(),lp:rows.length+1,name,quantity:m[2],unit:m[3].replace(/[,;|)]$/,"")});
+   if(name.length>2)rows.push({id:id(),lp:lpMatch?Number(lpMatch[1]):rows.length+1,name,quantity:m[2],unit:m[3].replace(/[,;|)]$/,"")});
   }
  }
  return rows;
+}
+function sequenceRows(tableRows:Row[],names:Map<number,string>){
+ const byLp=new Map<number,Row>();
+ for(const row of tableRows)if(row.lp>0&&row.lp<1000&&!byLp.has(row.lp))byLp.set(row.lp,row);
+ const positions=[...byLp.keys(),...names.keys()].filter(v=>v>0&&v<1000);
+ if(!positions.length)return tableRows.map((row,index)=>({...row,lp:index+1}));
+ const last=Math.max(...positions);
+ if(last>300)return tableRows.map((row,index)=>({...row,lp:index+1}));
+ const ordered:Row[]=[];
+ for(let lp=1;lp<=last;lp++){
+  const source=byLp.get(lp),name=names.get(lp)||source?.name||"";
+  ordered.push({id:source?.id||id(),lp,name,quantity:source?.quantity||"",unit:source?.unit||""});
+ }
+ return ordered;
 }
 export default function Home(){
  const input=useRef<HTMLInputElement>(null);
@@ -129,12 +146,11 @@ export default function Home(){
      setMessage(`Odczytuję nazwy na stronie ${i+1} z ${pages.length}…`);const nameResult=await worker.recognize(pages[i].names);namesText+="\n"+nameResult.data.text;
     }
     await worker.terminate();
-    const found=parseText(text),betterNames=parseNames(namesText);
-    if(betterNames.length>=Math.max(3,Math.floor(found.length*.6)))found.forEach((row,index)=>{if(betterNames[index])row.name=betterNames[index]});
+    const found=sequenceRows(parseText(text),parseNames(namesText));
     setRows(found);setProgress(100);setMessage(found.length?`Rozpoznano ${found.length} pozycji. Sprawdź dane.`:"Nie rozpoznano tabeli. Dodaj pozycje ręcznie lub użyj wyraźniejszego skanu.");
     return;
    }else{setProgress(90);setMessage("Odczytuję tabelę bezpośrednio z PDF…")}
-   const found=parseText(text);setRows(found);setProgress(100);setMessage(found.length?`Rozpoznano ${found.length} pozycji. Sprawdź dane.`:"Nie rozpoznano tabeli. Dodaj pozycje ręcznie lub użyj wyraźniejszego skanu.");
+   const found=sequenceRows(parseText(text),new Map());setRows(found);setProgress(100);setMessage(found.length?`Rozpoznano ${found.length} pozycji. Sprawdź dane.`:"Nie rozpoznano tabeli. Dodaj pozycje ręcznie lub użyj wyraźniejszego skanu.");
   }catch(e){console.error(e);setMessage("Nie udało się odczytać dokumentu. Spróbuj wyraźniejszego zdjęcia lub PDF.")}finally{setBusy(false)}
  }
  async function exportPdf(){
@@ -144,7 +160,7 @@ export default function Home(){
   pdfMake.vfs=fontsModule.default;
   const body=[
    [{text:"Lp.",bold:true},{text:"Nazwa towaru lub usługi",bold:true},{text:"Ilość",bold:true},{text:"Jedn.m",bold:true}],
-   ...rows.filter(r=>r.name.trim()).map((r,index)=>[String(index+1),r.name,r.quantity,r.unit])
+   ...rows.map(r=>[String(r.lp),r.name,r.quantity,r.unit])
   ];
   pdfMake.createPdf({
    pageSize:"A4",pageMargins:[36,42,36,42],
