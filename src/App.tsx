@@ -2,10 +2,6 @@
 import {useEffect,useMemo,useRef,useState} from "react";
 import {FileImage,FileText,LoaderCircle,Plus,ScanText,Trash2,Download,ShieldCheck} from "lucide-react";
 type Row={id:string;lp:number;name:string;quantity:string;unit:string};
-const demoRows:Row[]=[
- {id:"a",lp:1,name:"T-REX KLEJ GOLD HYBRYDOWY 290 ml – SOUDAL",quantity:"2",unit:"szt."},
- {id:"b",lp:2,name:"WAŁEK MIKROFIBRA ZAPAS 25 cm – BlueDolphin",quantity:"5",unit:"szt."}
-];
 const id=()=>crypto.randomUUID();
 async function prepareForOcr(source:string){
  return new Promise<string>((resolve,reject)=>{
@@ -47,11 +43,17 @@ function parseText(text:string){
 }
 export default function Home(){
  const input=useRef<HTMLInputElement>(null);
- const [rows,setRows]=useState<Row[]>(demoRows),[fileName,setFileName]=useState(""),[busy,setBusy]=useState(false),[progress,setProgress]=useState(0),[message,setMessage]=useState("Wczytaj fakturę, aby rozpocząć");
+ const [rows,setRows]=useState<Row[]>([]),[fileName,setFileName]=useState(""),[busy,setBusy]=useState(false),[progress,setProgress]=useState(0),[message,setMessage]=useState("Wczytaj fakturę, aby rozpocząć");
  useEffect(()=>{if("serviceWorker"in navigator)navigator.serviceWorker.register("/sw.js").catch(()=>undefined)},[]);
  const count=useMemo(()=>rows.filter(r=>r.name.trim()&&r.quantity.trim()).length,[rows]);
  const update=(rowId:string,field:"name"|"quantity"|"unit",value:string)=>setRows(a=>a.map(r=>r.id===rowId?{...r,[field]:value}:r));
  const remove=(rowId:string)=>setRows(a=>a.filter(r=>r.id!==rowId).map((r,i)=>({...r,lp:i+1})));
+ const clearAll=()=>{
+  if(!rows.length&&!fileName)return;
+  if(!window.confirm("Usunąć wszystkie pozycje i dane wczytanej faktury?"))return;
+  setRows([]);setFileName("");setProgress(0);setMessage("Usunięto stare dane. Możesz wczytać nową fakturę.");
+  if(input.current)input.current.value="";
+ };
  async function images(file:File){
   if(!file.type.includes("pdf"))return[await prepareForOcr(URL.createObjectURL(file))];
   const pdfjs=await import("pdfjs-dist");
@@ -125,7 +127,7 @@ export default function Home(){
     <div className="table-wrap"><table><thead><tr><th>Lp.</th><th>Nazwa towaru lub usługi</th><th>Ilość</th><th>Jedn.m</th><th aria-label="Usuń"/></tr></thead><tbody>
      {rows.length?rows.map(r=><tr key={r.id}><td>{r.lp}</td><td><input value={r.name} onChange={e=>update(r.id,"name",e.target.value)} aria-label={`Nazwa pozycji ${r.lp}`}/></td><td><input className="short" value={r.quantity} onChange={e=>update(r.id,"quantity",e.target.value)} aria-label={`Ilość pozycji ${r.lp}`}/></td><td><input className="short" value={r.unit} onChange={e=>update(r.id,"unit",e.target.value)} aria-label={`Miara pozycji ${r.lp}`}/></td><td><button className="icon-btn" onClick={()=>remove(r.id)} aria-label={`Usuń pozycję ${r.lp}`}><Trash2 size={17}/></button></td></tr>):<tr><td colSpan={5} className="empty">Brak pozycji. Wczytaj dokument lub dodaj pusty wiersz.</td></tr>}
     </tbody></table></div>
-    <div className="actions"><button className="secondary" onClick={()=>setRows(a=>[...a,{id:id(),lp:a.length+1,name:"",quantity:"1",unit:"szt."}])}><Plus size={18}/>Dodaj pozycję</button><button className="primary" onClick={exportPdf} disabled={!count}><Download size={18}/>Utwórz PDF</button></div>
+    <div className="actions"><div className="action-group"><button className="secondary" onClick={()=>setRows(a=>[...a,{id:id(),lp:a.length+1,name:"",quantity:"1",unit:"szt."}])}><Plus size={18}/>Dodaj pozycję</button><button className="danger" onClick={clearAll} disabled={!rows.length&&!fileName}><Trash2 size={18}/>Usuń wszystko</button></div><button className="primary" onClick={exportPdf} disabled={!count}><Download size={18}/>Utwórz PDF</button></div>
    </section>
   </section><footer>Po wygenerowaniu pliku możesz go wydrukować albo zapisać w dokumentacji.</footer>
  </main>
