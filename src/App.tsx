@@ -96,24 +96,22 @@ function sequenceRows(tableRows:Row[],names:Map<number,string>){
  }
  return ordered;
 }
-function fileAsDataUrl(file:File){
- if(!file.type.startsWith("image/"))return new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=reject;reader.readAsDataURL(file)});
- return new Promise<string>((resolve,reject)=>{
+function fileAsDataUrls(file:File){
+ if(!file.type.startsWith("image/"))return new Promise<string[]>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve([String(reader.result)]);reader.onerror=reject;reader.readAsDataURL(file)});
+ return new Promise<string[]>((resolve,reject)=>{
   const image=new Image(),url=URL.createObjectURL(file);
   image.onload=()=>{
-   const top=Math.round(image.height*.25),height=Math.round(image.height*.73),width=image.width;
-   const scale=Math.min(1.6,Math.max(.8,1400/width)),canvas=document.createElement("canvas");
-   canvas.width=Math.round(width*scale);canvas.height=Math.round(height*scale);
-   const ctx=canvas.getContext("2d")!;ctx.fillStyle="#fff";ctx.fillRect(0,0,canvas.width,canvas.height);
-   ctx.drawImage(image,0,top,width,height,0,0,canvas.width,canvas.height);URL.revokeObjectURL(url);
-   resolve(canvas.toDataURL("image/jpeg",.92));
+   const width=image.width,start=Math.round(image.height*.25),total=Math.round(image.height*.73),overlap=Math.round(total*.04),half=Math.round(total/2);
+   const scale=Math.min(2,Math.max(1,2000/width));
+   const makePart=(top:number,height:number)=>{const canvas=document.createElement("canvas");canvas.width=Math.round(width*scale);canvas.height=Math.round(height*scale);const ctx=canvas.getContext("2d")!;ctx.fillStyle="#fff";ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(image,0,top,width,height,0,0,canvas.width,canvas.height);return canvas.toDataURL("image/jpeg",.92)};
+   const parts=[makePart(start,half+overlap),makePart(start+half-overlap,total-half+overlap)];URL.revokeObjectURL(url);resolve(parts);
   };
   image.onerror=()=>{URL.revokeObjectURL(url);reject(new Error("Nie udało się przygotować zdjęcia"))};image.src=url;
  });
 }
 async function readWithAi(file:File){
  if(file.size>4*1024*1024)throw new Error("Plik jest większy niż 4 MB");
- const response=await fetch("/.netlify/functions/extract-invoice",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({dataUrl:await fileAsDataUrl(file),mimeType:file.type,fileName:file.name})});
+ const response=await fetch("/.netlify/functions/extract-invoice",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({dataUrls:await fileAsDataUrls(file),mimeType:file.type,fileName:file.name})});
  const data=await response.json();
  if(!response.ok)throw new Error(data?.error||"AI nie odczytało faktury");
  if(!Array.isArray(data.items)||!data.items.length)throw new Error("AI nie znalazło pozycji");
