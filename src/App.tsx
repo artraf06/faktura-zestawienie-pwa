@@ -7,6 +7,27 @@ const demoRows:Row[]=[
  {id:"b",lp:2,name:"WAŁEK MIKROFIBRA ZAPAS 25 cm – BlueDolphin",quantity:"5",unit:"szt."}
 ];
 const id=()=>crypto.randomUUID();
+async function prepareForOcr(source:string){
+ return new Promise<string>((resolve,reject)=>{
+  const image=new Image();
+  image.onload=()=>{
+   const top=Math.round(image.height*.27),sourceHeight=Math.round(image.height*.70);
+   const targetWidth=Math.max(2400,image.width*2),scale=targetWidth/image.width;
+   const canvas=document.createElement("canvas");
+   canvas.width=Math.round(image.width*scale);canvas.height=Math.round(sourceHeight*scale);
+   const ctx=canvas.getContext("2d",{willReadFrequently:true})!;
+   ctx.drawImage(image,0,top,image.width,sourceHeight,0,0,canvas.width,canvas.height);
+   const pixels=ctx.getImageData(0,0,canvas.width,canvas.height);
+   for(let i=0;i<pixels.data.length;i+=4){
+    const gray=.299*pixels.data[i]+.587*pixels.data[i+1]+.114*pixels.data[i+2];
+    const value=Math.max(0,Math.min(255,(gray-128)*1.55+128));
+    pixels.data[i]=pixels.data[i+1]=pixels.data[i+2]=value;
+   }
+   ctx.putImageData(pixels,0,0);resolve(canvas.toDataURL("image/png"));
+  };
+  image.onerror=reject;image.src=source;
+ });
+}
 function parseText(text:string){
  const ignored=/^(lp\.?|nazwa|towar|usług|ilość|miara|j\.?m\.?|vat|netto|brutto|cena|wartość)/i;
  const rows:Row[]=[];
@@ -32,18 +53,43 @@ export default function Home(){
  const update=(rowId:string,field:"name"|"quantity"|"unit",value:string)=>setRows(a=>a.map(r=>r.id===rowId?{...r,[field]:value}:r));
  const remove=(rowId:string)=>setRows(a=>a.filter(r=>r.id!==rowId).map((r,i)=>({...r,lp:i+1})));
  async function images(file:File){
-  if(!file.type.includes("pdf"))return[URL.createObjectURL(file)];
+  if(!file.type.includes("pdf"))return[await prepareForOcr(URL.createObjectURL(file))];
   const pdfjs=await import("pdfjs-dist");
   pdfjs.GlobalWorkerOptions.workerSrc=new URL("pdfjs-dist/build/pdf.worker.min.mjs",import.meta.url).toString();
   const pdf=await pdfjs.getDocument({data:await file.arrayBuffer()}).promise,out:string[]=[];
-  for(let n=1;n<=pdf.numPages;n++){const page=await pdf.getPage(n),view=page.getViewport({scale:2}),canvas=document.createElement("canvas");canvas.width=view.width;canvas.height=view.height;await page.render({canvas,canvasContext:canvas.getContext("2d")!,viewport:view}).promise;out.push(canvas.toDataURL("image/jpeg",.92))}
+  for(let n=1;n<=pdf.numPages;n++){const page=await pdf.getPage(n),view=page.getViewport({scale:2}),canvas=document.createElement("canvas");canvas.width=view.width;canvas.height=view.height;await page.render({canvas,canvasContext:canvas.getContext("2d")!,viewport:view}).promise;out.push(await prepareForOcr(canvas.toDataURL("image/png")))}
   return out;
+ }
+ async function nativePdfText(file:File){
+  if(!file.type.includes("pdf"))return"";
+  const pdfjs=await import("pdfjs-dist");
+  pdfjs.GlobalWorkerOptions.workerSrc=new URL("pdfjs-dist/build/pdf.worker.min.mjs",import.meta.url).toString();
+  const pdf=await pdfjs.getDocument({data:await file.arrayBuffer()}).promise;let result="";
+  for(let n=1;n<=pdf.numPages;n++){
+   const page=await pdf.getPage(n),content=await page.getTextContent();
+   const lines=new Map<number,{x:number;text:string}[]>();
+   for(const raw of content.items){
+    const item=raw as {str?:string;transform?:number[]};
+    if(!item.str||!item.transform)continue;
+    const y=Math.round(item.transform[5]/3)*3,x=item.transform[4];
+    const line=lines.get(y)||[];line.push({x,text:item.str});lines.set(y,line);
+   }
+   result+=[...lines.entries()].sort((a,b)=>b[0]-a[0]).map(([,items])=>items.sort((a,b)=>a.x-b.x).map(v=>v.text).join(" ")).join("\n")+"\n";
+  }
+  return result;
  }
  async function read(file:File){
   setBusy(true);setProgress(4);setFileName(file.name);setMessage("Przygotowuję dokument…");
   try{
-   const pages=await images(file),module=await import("tesseract.js"),T=module.default;let text="";
-   for(let i=0;i<pages.length;i++){const result=await T.recognize(pages[i],"pol+eng",{logger:e=>{if(e.status==="recognizing text"){setProgress(Math.round(((i+e.progress)/pages.length)*100));setMessage(`Odczytuję stronę ${i+1} z ${pages.length}…`)}}});text+="\n"+result.data.text}
+   let text=await nativePdfText(file);
+   if(text.length<150||!/(nazwa|towaru|ilość|jedn)/i.test(text)){
+    const pages=await images(file),module=await import("tesseract.js"),T=module.default;
+    const worker=await T.createWorker(["pol","eng"],T.OEM.LSTM_ONLY,{logger:e=>{if(e.status==="recognizing text"){setProgress(Math.round(e.progress*100));setMessage("Odczytuję i porządkuję tabelę…")}}});
+    await worker.setParameters({tessedit_pageseg_mode:T.PSM.SINGLE_BLOCK,preserve_interword_spaces:"1",user_defined_dpi:"300"});
+    text="";
+    for(let i=0;i<pages.length;i++){setMessage(`Odczytuję stronę ${i+1} z ${pages.length}…`);const result=await worker.recognize(pages[i]);text+="\n"+result.data.text}
+    await worker.terminate();
+   }else{setProgress(90);setMessage("Odczytuję tabelę bezpośrednio z PDF…")}
    const found=parseText(text);setRows(found);setProgress(100);setMessage(found.length?`Rozpoznano ${found.length} pozycji. Sprawdź dane.`:"Nie rozpoznano tabeli. Dodaj pozycje ręcznie lub użyj wyraźniejszego skanu.");
   }catch(e){console.error(e);setMessage("Nie udało się odczytać dokumentu. Spróbuj wyraźniejszego zdjęcia lub PDF.")}finally{setBusy(false)}
  }
