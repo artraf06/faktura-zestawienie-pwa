@@ -102,7 +102,7 @@ function fileAsDataUrl(file:File){
   const image=new Image(),url=URL.createObjectURL(file);
   image.onload=()=>{
    const top=Math.round(image.height*.25),height=Math.round(image.height*.73),width=image.width;
-   const scale=Math.min(2,Math.max(1,1800/width)),canvas=document.createElement("canvas");
+   const scale=Math.min(1.6,Math.max(.8,1400/width)),canvas=document.createElement("canvas");
    canvas.width=Math.round(width*scale);canvas.height=Math.round(height*scale);
    const ctx=canvas.getContext("2d")!;ctx.fillStyle="#fff";ctx.fillRect(0,0,canvas.width,canvas.height);
    ctx.drawImage(image,0,top,width,height,0,0,canvas.width,canvas.height);URL.revokeObjectURL(url);
