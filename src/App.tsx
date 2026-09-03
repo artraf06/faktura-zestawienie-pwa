@@ -67,6 +67,7 @@ function parseText(text:string){
  for(const raw of text.split(/\n+/).map(x=>x.replace(/\s+/g," ").trim()).filter(Boolean)){
   if(ignored.test(raw)||raw.length<4)continue;
   const lpMatch=raw.match(/^[|\s[(]*(\d{1,3})[.)|\]/\\-]*\s*/);
+  if(!lpMatch)continue;
   const line=raw.replace(/^[|\s[(]*(\d{1,3})[.)|\]/\\-]*\s*/,"");
   // Pierwsza para „liczba + jednostka” wyznacza kolumny Ilość i Jedn.m.
   // Tekst po jednostce (ceny, VAT, wartości) jest ignorowany.
@@ -74,7 +75,7 @@ function parseText(text:string){
   if(m){
    // Usuń końcowy symbol PKWiU, także gdy OCR poprzedził go literą lub kreską.
    const name=m[1].replace(/\s+[a-z|]?\d{1,2}(?:[.:-]\d{1,2}){2,}(?:[.:-]\d{1,2})*\s*$/i,"").replace(/[|[]+$/,"").trim();
-   if(name.length>2)rows.push({id:id(),lp:lpMatch?Number(lpMatch[1]):rows.length+1,name,quantity:m[2],unit:m[3].replace(/[,;|)]$/,"")});
+   if(name.length>2)rows.push({id:id(),lp:Number(lpMatch[1]),name,quantity:m[2],unit:m[3].replace(/[,;|)]$/,"")});
   }
  }
  return rows;
@@ -89,7 +90,9 @@ function sequenceRows(tableRows:Row[],names:Map<number,string>){
  const ordered:Row[]=[];
  for(let lp=1;lp<=last;lp++){
   const source=byLp.get(lp),name=names.get(lp)||source?.name||"";
-  ordered.push({id:source?.id||id(),lp,name,quantity:source?.quantity||"",unit:source?.unit||""});
+  let unit=source?.unit||"";
+  if(name&&!unit)unit=/\bKPL\b/i.test(name)?"kpl.":/\bC-?RURA\b/i.test(name)?"mb":"szt.";
+  ordered.push({id:source?.id||id(),lp,name,quantity:source?.quantity||"",unit});
  }
  return ordered;
 }
@@ -97,7 +100,7 @@ export default function Home(){
  const input=useRef<HTMLInputElement>(null);
  const [rows,setRows]=useState<Row[]>([]),[fileName,setFileName]=useState(""),[busy,setBusy]=useState(false),[progress,setProgress]=useState(0),[message,setMessage]=useState("Wczytaj fakturę, aby rozpocząć");
  useEffect(()=>{if("serviceWorker"in navigator)navigator.serviceWorker.register("/sw.js").catch(()=>undefined)},[]);
- const count=useMemo(()=>rows.filter(r=>r.name.trim()&&r.quantity.trim()).length,[rows]);
+ const count=useMemo(()=>rows.filter(r=>r.name.trim()).length,[rows]);
  const update=(rowId:string,field:"name"|"quantity"|"unit",value:string)=>setRows(a=>a.map(r=>r.id===rowId?{...r,[field]:value}:r));
  const remove=(rowId:string)=>setRows(a=>a.filter(r=>r.id!==rowId).map((r,i)=>({...r,lp:i+1})));
  const clearAll=()=>{
