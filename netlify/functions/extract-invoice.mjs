@@ -12,7 +12,7 @@ export default async(req)=>{
   const response=await fetch("https://api.openai.com/v1/responses",{
    method:"POST",headers:{Authorization:`Bearer ${apiKey}`,"Content-Type":"application/json"},
    body:JSON.stringify({
-    model:"gpt-5-mini",
+    model:"gpt-4o",
     input:[{role:"user",content:[
      {type:"input_text",text:"To jest powiększona tabela pozycji z faktury. Odczytaj ją WIERSZ PO WIERSZU ze wszystkich stron. Kolumna Lp. jest jedynym wyznacznikiem nowej pozycji: utwórz dokładnie jeden rekord dla każdego wydrukowanego numeru Lp. Tekst bez własnego numeru Lp. jest kontynuacją nazwy wcześniejszej pozycji — połącz go z nią. Dla każdego Lp. patrz poziomo i odczytaj z tego samego wiersza pełną Nazwę towaru lub usługi, Ilość i Jedn.m. Nie zakładaj, że ilości są jednakowe; sprawdź każdą cyfrę oddzielnie. Nie przesuwaj danych między wierszami. Pomiń PKWiU, ceny, wartości, netto, VAT i brutto. Jeśli komórka jest nieczytelna, pozostaw pusty tekst, ale nie pomijaj numeru. Jednostki zapisuj dokładnie, np. szt., kpl., mb. Na końcu sprawdź ciągłość Lp. oraz zgodność każdego wiersza."},documentPart
     ]}],
