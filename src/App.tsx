@@ -24,6 +24,41 @@ async function prepareForOcr(source:string){
   image.onerror=reject;image.src=source;
  });
 }
+async function prepareNameColumn(source:string){
+ return new Promise<string>((resolve,reject)=>{
+  const image=new Image();
+  image.onload=()=>{
+   const left=Math.round(image.width*.045),top=Math.round(image.height*.32);
+   const sourceWidth=Math.round(image.width*.43),sourceHeight=Math.round(image.height*.64);
+   const scale=Math.max(2.5,1800/sourceWidth),canvas=document.createElement("canvas");
+   canvas.width=Math.round(sourceWidth*scale);canvas.height=Math.round(sourceHeight*scale);
+   const ctx=canvas.getContext("2d",{willReadFrequently:true})!;
+   ctx.drawImage(image,left,top,sourceWidth,sourceHeight,0,0,canvas.width,canvas.height);
+   const pixels=ctx.getImageData(0,0,canvas.width,canvas.height);
+   for(let i=0;i<pixels.data.length;i+=4){
+    const gray=.299*pixels.data[i]+.587*pixels.data[i+1]+.114*pixels.data[i+2];
+    const value=Math.max(0,Math.min(255,(gray-128)*1.7+128));
+    pixels.data[i]=pixels.data[i+1]=pixels.data[i+2]=value;
+   }
+   ctx.putImageData(pixels,0,0);resolve(canvas.toDataURL("image/png"));
+  };
+  image.onerror=reject;image.src=source;
+ });
+}
+function parseNames(text:string){
+ const names:string[]=[];
+ for(const raw of text.split(/\n+/).map(v=>v.replace(/\s+/g," ").trim()).filter(Boolean)){
+  if(/^(lp\.?|nazwa towaru|nr konta)/i.test(raw))continue;
+  const match=raw.match(/^[|\[({\s-]*[A-Z]?\s*(\d{1,2})[|.)\]}\s-]+(.{3,})$/i);
+  if(match){
+   const name=match[2].replace(/\s+\d+(?:[.,-]\d+){2,}.*$/," ").replace(/[|]+$/," ").trim();
+   if(name.length>2)names.push(name);
+  }else if(names.length&&raw.length>3&&!/\b(szt|kpl|mb|netto|brutto|vat)\b/i.test(raw)){
+   names[names.length-1]+=" "+raw.replace(/[|]+$/," ").trim();
+  }
+ }
+ return names;
+}
 function parseText(text:string){
  const ignored=/^(lp\.?|nazwa|towar|usług|ilość|miara|j\.?m\.?|vat|netto|brutto|cena|wartość)/i;
  const rows:Row[]=[];
@@ -55,11 +90,11 @@ export default function Home(){
   if(input.current)input.current.value="";
  };
  async function images(file:File){
-  if(!file.type.includes("pdf"))return[await prepareForOcr(URL.createObjectURL(file))];
+  if(!file.type.includes("pdf")){const source=URL.createObjectURL(file);return[{full:await prepareForOcr(source),names:await prepareNameColumn(source)}]}
   const pdfjs=await import("pdfjs-dist");
   pdfjs.GlobalWorkerOptions.workerSrc=new URL("pdfjs-dist/build/pdf.worker.min.mjs",import.meta.url).toString();
-  const pdf=await pdfjs.getDocument({data:await file.arrayBuffer()}).promise,out:string[]=[];
-  for(let n=1;n<=pdf.numPages;n++){const page=await pdf.getPage(n),view=page.getViewport({scale:2}),canvas=document.createElement("canvas");canvas.width=view.width;canvas.height=view.height;await page.render({canvas,canvasContext:canvas.getContext("2d")!,viewport:view}).promise;out.push(await prepareForOcr(canvas.toDataURL("image/png")))}
+  const pdf=await pdfjs.getDocument({data:await file.arrayBuffer()}).promise,out:{full:string;names:string}[]=[];
+  for(let n=1;n<=pdf.numPages;n++){const page=await pdf.getPage(n),view=page.getViewport({scale:2}),canvas=document.createElement("canvas");canvas.width=view.width;canvas.height=view.height;await page.render({canvas,canvasContext:canvas.getContext("2d")!,viewport:view}).promise;const source=canvas.toDataURL("image/png");out.push({full:await prepareForOcr(source),names:await prepareNameColumn(source)})}
   return out;
  }
  async function nativePdfText(file:File){
@@ -88,9 +123,16 @@ export default function Home(){
     const pages=await images(file),module=await import("tesseract.js"),T=module.default;
     const worker=await T.createWorker(["pol","eng"],T.OEM.LSTM_ONLY,{logger:e=>{if(e.status==="recognizing text"){setProgress(Math.round(e.progress*100));setMessage("Odczytuję i porządkuję tabelę…")}}});
     await worker.setParameters({tessedit_pageseg_mode:T.PSM.SINGLE_BLOCK,preserve_interword_spaces:"1",user_defined_dpi:"300"});
-    text="";
-    for(let i=0;i<pages.length;i++){setMessage(`Odczytuję stronę ${i+1} z ${pages.length}…`);const result=await worker.recognize(pages[i]);text+="\n"+result.data.text}
+    text="";let namesText="";
+    for(let i=0;i<pages.length;i++){
+     setMessage(`Odczytuję tabelę na stronie ${i+1} z ${pages.length}…`);const result=await worker.recognize(pages[i].full);text+="\n"+result.data.text;
+     setMessage(`Odczytuję nazwy na stronie ${i+1} z ${pages.length}…`);const nameResult=await worker.recognize(pages[i].names);namesText+="\n"+nameResult.data.text;
+    }
     await worker.terminate();
+    const found=parseText(text),betterNames=parseNames(namesText);
+    if(betterNames.length>=Math.max(3,Math.floor(found.length*.6)))found.forEach((row,index)=>{if(betterNames[index])row.name=betterNames[index]});
+    setRows(found);setProgress(100);setMessage(found.length?`Rozpoznano ${found.length} pozycji. Sprawdź dane.`:"Nie rozpoznano tabeli. Dodaj pozycje ręcznie lub użyj wyraźniejszego skanu.");
+    return;
    }else{setProgress(90);setMessage("Odczytuję tabelę bezpośrednio z PDF…")}
    const found=parseText(text);setRows(found);setProgress(100);setMessage(found.length?`Rozpoznano ${found.length} pozycji. Sprawdź dane.`:"Nie rozpoznano tabeli. Dodaj pozycje ręcznie lub użyj wyraźniejszego skanu.");
   }catch(e){console.error(e);setMessage("Nie udało się odczytać dokumentu. Spróbuj wyraźniejszego zdjęcia lub PDF.")}finally{setBusy(false)}
