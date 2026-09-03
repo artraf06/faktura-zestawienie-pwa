@@ -20,7 +20,7 @@ export default async(req)=>{
    method:"POST",headers:{Authorization:`Bearer ${apiKey}`,"Content-Type":"application/json"},
    body:JSON.stringify({
     model:"gpt-5",
-    reasoning:{effort:"high"},
+    reasoning:{effort:"low"},
     input:[{role:"user",content:[
      {type:"input_text",text:"Odczytaj tabelę pozycji ze WSZYSTKICH stron tej polskiej faktury. Najważniejsza jest drukowana kolumna Lp. Utwórz dokładnie jeden element dla każdego rzeczywistego numeru widocznego w kolumnie Lp., kolejno od pierwszego do ostatniego. Nigdy nie twórz nowej pozycji z linii bez własnego numeru Lp. — taka linia jest kontynuacją nazwy poprzedniej pozycji i trzeba ją z nią połączyć. Dla każdego numeru odczytaj komórki z TEGO SAMEGO poziomego wiersza: pełną nazwę towaru lub usługi, ilość i jednostkę miary. Uważnie sprawdź każdą ilość; nie zakładaj, że wszystkie są takie same. Nie przesuwaj wartości między sąsiednimi wierszami. Nie przepisuj symbolu PKWiU, cen, wartości, VAT ani podatku. Jeśli pojedyncza komórka jest naprawdę nieczytelna, zwróć pusty tekst tylko dla tej komórki, ale zachowaj pozycję. Jednostki zapisuj np. szt., kpl., mb, kg, l. Przed odpowiedzią sprawdź, czy numery są ciągłe i czy żadna zawinięta nazwa nie została uznana za nową pozycję."},
      documentPart
