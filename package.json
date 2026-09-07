@@ -13,6 +13,7 @@
     "test": "npm run build"
   },
   "dependencies": {
+    "docx": "^9.5.1",
     "lucide-react": "^0.468.0",
     "pdfjs-dist": "^6.3.289",
     "pdfmake": "^0.3.11",
