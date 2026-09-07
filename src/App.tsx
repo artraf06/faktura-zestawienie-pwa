@@ -203,8 +203,7 @@ export default function Home(){
   pdfMake.createPdf({
    pageSize:"A4",pageMargins:[36,42,36,42],
    content:[
-    {text:"ZESTAWIENIE TOWARÓW I USŁUG",fontSize:15,bold:true,margin:[0,0,0,6]},
-    {text:`Źródło: ${fileName||"dane wprowadzone ręcznie"}`,fontSize:9,color:"#526174",margin:[0,0,0,14]},
+    {text:"ZESTAWIENIE TOWARÓW I USŁUG",fontSize:15,bold:true,margin:[0,0,0,14]},
     {table:{headerRows:1,widths:[28,"*",45,48],body,dontBreakRows:true},layout:{fillColor:(row:number)=>row===0?"#ebeff4":null}}
    ],
    footer:(currentPage:number,pageCount:number)=>({text:`Strona ${currentPage} z ${pageCount}`,alignment:"right",margin:[0,10,36,0],fontSize:8,color:"#65748a"}),
