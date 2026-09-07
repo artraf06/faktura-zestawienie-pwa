@@ -210,6 +210,29 @@ export default function Home(){
    defaultStyle:{font:"Roboto",fontSize:9}
   }).download(`zestawienie-${new Date().toISOString().slice(0,10)}.pdf`);
  }
+ async function exportWord(){
+  const {AlignmentType,BorderStyle,Document,Packer,Paragraph,Table,TableCell,TableLayoutType,TableRow,TextRun,VerticalAlign,WidthType}=await import("docx");
+  const widths=[650,7116,1300,1400],border={style:BorderStyle.SINGLE,size:4,color:"B7C1CE"};
+  const cell=(text:string,width:number,bold=false,alignment=AlignmentType.LEFT,fill?:string)=>new TableCell({
+   width:{size:width,type:WidthType.DXA},verticalAlign:VerticalAlign.CENTER,
+   margins:{top:100,bottom:100,left:120,right:120},borders:{top:border,bottom:border,left:border,right:border},
+   shading:fill?{fill}:undefined,
+   children:[new Paragraph({alignment,spacing:{before:0,after:0},children:[new TextRun({text,bold,font:"Arial",size:18})]})]
+  });
+  const tableRows=[
+   new TableRow({tableHeader:true,children:[cell("Lp.",widths[0],true,AlignmentType.CENTER,"E9EEF5"),cell("Nazwa towaru lub usługi",widths[1],true,AlignmentType.LEFT,"E9EEF5"),cell("Ilość",widths[2],true,AlignmentType.CENTER,"E9EEF5"),cell("Jedn.m",widths[3],true,AlignmentType.CENTER,"E9EEF5")]}),
+   ...rows.map(row=>new TableRow({cantSplit:true,children:[cell(String(row.lp),widths[0],false,AlignmentType.CENTER),cell(row.name,widths[1]),cell(row.quantity,widths[2],false,AlignmentType.CENTER),cell(row.unit,widths[3],false,AlignmentType.CENTER)]}))
+  ];
+  const wordDoc=new Document({styles:{default:{document:{run:{font:"Arial",size:18}}}},sections:[{
+   properties:{page:{size:{width:11906,height:16838},margin:{top:720,right:720,bottom:720,left:720}}},
+   children:[
+    new Paragraph({spacing:{after:280},children:[new TextRun({text:"ZESTAWIENIE TOWARÓW I USŁUG",bold:true,font:"Arial",size:30})]}),
+    new Table({width:{size:10466,type:WidthType.DXA},layout:TableLayoutType.FIXED,columnWidths:widths,rows:tableRows})
+   ]
+  }]});
+  const blob=await Packer.toBlob(wordDoc),url=URL.createObjectURL(blob),link=document.createElement("a");
+  link.href=url;link.download=`zestawienie-${new Date().toISOString().slice(0,10)}.docx`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+ }
  return <main className="app-shell">
   <header className="topbar"><div className="brand-mark"><ScanText size={25}/></div><div><h1>Faktura → Zestawienie</h1><p>Odczyt pozycji z JPG i PDF</p></div><div className="privacy"><ShieldCheck size={18}/><span>Dane przetwarzane na tym urządzeniu</span></div></header>
   <section className="workspace">
@@ -223,7 +246,7 @@ export default function Home(){
     <div className="table-wrap"><table><thead><tr><th>Lp.</th><th>Nazwa towaru lub usługi</th><th>Ilość</th><th>Jedn.m</th><th aria-label="Usuń"/></tr></thead><tbody>
      {rows.length?rows.map(r=><tr key={r.id}><td>{r.lp}</td><td><input value={r.name} onChange={e=>update(r.id,"name",e.target.value)} aria-label={`Nazwa pozycji ${r.lp}`}/></td><td><input className="short" value={r.quantity} onChange={e=>update(r.id,"quantity",e.target.value)} aria-label={`Ilość pozycji ${r.lp}`}/></td><td><input className="short" value={r.unit} onChange={e=>update(r.id,"unit",e.target.value)} aria-label={`Miara pozycji ${r.lp}`}/></td><td><button className="icon-btn" onClick={()=>remove(r.id)} aria-label={`Usuń pozycję ${r.lp}`}><Trash2 size={17}/></button></td></tr>):<tr><td colSpan={5} className="empty">Brak pozycji. Wczytaj dokument lub dodaj pusty wiersz.</td></tr>}
     </tbody></table></div>
-    <div className="actions"><div className="action-group"><button className="secondary" onClick={()=>setRows(a=>[...a,{id:id(),lp:a.length+1,name:"",quantity:"1",unit:"szt."}])}><Plus size={18}/>Dodaj pozycję</button><button className="danger" onClick={clearAll} disabled={!rows.length&&!fileName}><Trash2 size={18}/>Usuń wszystko</button></div><button className="primary" onClick={exportPdf} disabled={!count}><Download size={18}/>Utwórz PDF</button></div>
+    <div className="actions"><div className="action-group"><button className="secondary" onClick={()=>setRows(a=>[...a,{id:id(),lp:a.length+1,name:"",quantity:"1",unit:"szt."}])}><Plus size={18}/>Dodaj pozycję</button><button className="danger" onClick={clearAll} disabled={!rows.length&&!fileName}><Trash2 size={18}/>Usuń wszystko</button></div><div className="export-group"><button className="secondary" onClick={exportWord} disabled={!count}><Download size={18}/>Utwórz Word</button><button className="primary" onClick={exportPdf} disabled={!count}><Download size={18}/>Utwórz PDF</button></div></div>
    </section>
   </section><footer>Po wygenerowaniu pliku możesz go wydrukować albo zapisać w dokumentacji.</footer>
  </main>
