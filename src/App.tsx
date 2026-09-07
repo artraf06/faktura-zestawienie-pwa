@@ -104,7 +104,12 @@ function fileAsDataUrls(file:File){
    const width=image.width,start=Math.round(image.height*.25),total=Math.round(image.height*.73),overlap=Math.round(total*.04),half=Math.round(total/2);
    const scale=Math.min(2,Math.max(1,2000/width));
    const makePart=(top:number,height:number)=>{const canvas=document.createElement("canvas");canvas.width=Math.round(width*scale);canvas.height=Math.round(height*scale);const ctx=canvas.getContext("2d")!;ctx.fillStyle="#fff";ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(image,0,top,width,height,0,0,canvas.width,canvas.height);return canvas.toDataURL("image/jpeg",.92)};
-   const parts=[makePart(start,half+overlap),makePart(start+half-overlap,total-half+overlap)];URL.revokeObjectURL(url);resolve(parts);
+   // Osobne powiększenia środkowo-prawej części tabeli zapobiegają
+   // przesuwaniu wartości między wierszami w wąskich kolumnach Ilość i Jedn.m.
+   const columnLeft=Math.round(width*.39),columnWidth=Math.round(width*.39);
+   const columnScale=Math.max(2.6,1500/columnWidth);
+   const makeColumns=(top:number,height:number)=>{const canvas=document.createElement("canvas");canvas.width=Math.round(columnWidth*columnScale);canvas.height=Math.round(height*columnScale);const ctx=canvas.getContext("2d")!;ctx.fillStyle="#fff";ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(image,columnLeft,top,columnWidth,height,0,0,canvas.width,canvas.height);return canvas.toDataURL("image/jpeg",.95)};
+   const parts=[makePart(start,half+overlap),makePart(start+half-overlap,total-half+overlap),makeColumns(start,half+overlap),makeColumns(start+half-overlap,total-half+overlap)];URL.revokeObjectURL(url);resolve(parts);
   };
   image.onerror=()=>{URL.revokeObjectURL(url);reject(new Error("Nie udało się przygotować zdjęcia"))};image.src=url;
  });
