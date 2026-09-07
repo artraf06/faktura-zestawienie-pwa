@@ -185,7 +185,7 @@ export default function Home(){
     }
     await worker.terminate();
     const found=sequenceRows(parseText(text),parseNames(namesText));
-    setRows(found);setProgress(100);setMessage(found.length?`Rozpoznano ${found.length} pozycji. Sprawdź dane.`:"Nie rozpoznano tabeli. Dodaj pozycje ręcznie lub użyj wyraźniejszego skanu.");
+    setRows(found);setProgress(100);setMessage(found.length?`Uwaga: AI nie zadziałało. Awaryjny OCR rozpoznał ${found.length} pozycji — wynik może zawierać błędy.`:"AI nie zadziałało, a awaryjny OCR nie rozpoznał tabeli. Spróbuj ponownie później.");
     return;
    }else{setProgress(90);setMessage("Odczytuję tabelę bezpośrednio z PDF…")}
    const found=sequenceRows(parseText(text),new Map());setRows(found);setProgress(100);setMessage(found.length?`Rozpoznano ${found.length} pozycji. Sprawdź dane.`:"Nie rozpoznano tabeli. Dodaj pozycje ręcznie lub użyj wyraźniejszego skanu.");
