@@ -1,7 +1,10 @@
 "use client";
 import {useEffect,useMemo,useRef,useState} from "react";
-import {FileImage,FileText,LoaderCircle,Plus,ScanText,Trash2,Download,ShieldCheck} from "lucide-react";
-type Row={id:string;lp:number;name:string;quantity:string;unit:string};
+import {FileImage,FileText,LoaderCircle,Plus,ScanText,Trash2,Download,ShieldCheck,TriangleAlert} from "lucide-react";
+import type {Worker as TWorker} from "tesseract.js";
+import {odczytajTabele,type Gray,type OcrFn,type OcrWord,type Pozycja} from "./tableOcr";
+import {pozycjeZPdf,pozycjeZeSlow,type PdfItem} from "./pdfTabela";
+type Row={id:string;lp:number;name:string;quantity:string;unit:string;uwaga?:string};
 const id=()=>crypto.randomUUID();
 async function prepareForOcr(source:string){
  return new Promise<string>((resolve,reject)=>{
@@ -96,37 +99,55 @@ function sequenceRows(tableRows:Row[],names:Map<number,string>){
  }
  return ordered;
 }
-function fileAsDataUrls(file:File){
- if(!file.type.startsWith("image/"))return new Promise<string[]>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve([String(reader.result)]);reader.onerror=reject;reader.readAsDataURL(file)});
- return new Promise<string[]>((resolve,reject)=>{
-  const image=new Image(),url=URL.createObjectURL(file);
-  image.onload=()=>{
-   const width=image.width,start=Math.round(image.height*.25),total=Math.round(image.height*.73),overlap=Math.round(total*.04),half=Math.round(total/2);
-   const scale=Math.min(2,Math.max(1,2000/width));
-   const makePart=(top:number,height:number)=>{const canvas=document.createElement("canvas");canvas.width=Math.round(width*scale);canvas.height=Math.round(height*scale);const ctx=canvas.getContext("2d")!;ctx.fillStyle="#fff";ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(image,0,top,width,height,0,0,canvas.width,canvas.height);return canvas.toDataURL("image/jpeg",.92)};
-   const parts=[makePart(start,half+overlap),makePart(start+half-overlap,total-half+overlap)];URL.revokeObjectURL(url);resolve(parts);
-  };
-  image.onerror=()=>{URL.revokeObjectURL(url);reject(new Error("Nie udało się przygotować zdjęcia"))};image.src=url;
- });
+const SZEROKOSC=2600;
+// pozwala podać własne ścieżki plików OCR (np. do testów lub pracy offline)
+const opcjeTesseract=()=>((globalThis as {__tesseractOptions?:object}).__tesseractOptions||{});
+// obraz (zdjęcie lub strona PDF) → skala szarości o stałej szerokości
+function doSzarosci(zrodlo:CanvasImageSource,w:number,h:number):Gray{
+ const scale=SZEROKOSC/w,W=SZEROKOSC,H=Math.round(h*scale),canvas=document.createElement("canvas");
+ canvas.width=W;canvas.height=H;
+ const ctx=canvas.getContext("2d",{willReadFrequently:true})!;
+ ctx.fillStyle="#fff";ctx.fillRect(0,0,W,H);ctx.imageSmoothingQuality="high";ctx.drawImage(zrodlo,0,0,W,H);
+ const px=ctx.getImageData(0,0,W,H).data,d=new Uint8Array(W*H);
+ for(let i=0;i<d.length;i++)d[i]=(px[i*4]*299+px[i*4+1]*587+px[i*4+2]*114)/1000;
+ return {w:W,h:H,d};
 }
-async function readWithAi(files:File[]){
- if(files.length>1&&files.some(file=>file.type.includes("pdf")))throw new Error("PDF wczytaj osobno; kilka stron JPG zaznacz jednocześnie");
- const dataUrls=(await Promise.all(files.map(fileAsDataUrls))).flat();
- if(dataUrls.reduce((sum,value)=>sum+value.length,0)>5.5*1024*1024)throw new Error("Łączny rozmiar stron jest zbyt duży. Użyj PDF lub mniejszych zdjęć.");
- const response=await fetch("/.netlify/functions/extract-invoice",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({dataUrls,mimeType:files[0].type,fileName:files.map(file=>file.name).join(", ")})});
- const data=await response.json();
- if(!response.ok)throw new Error(data?.error||"AI nie odczytało faktury");
- if(!Array.isArray(data.items)||!data.items.length)throw new Error("AI nie znalazło pozycji");
- return data.items.map((item:{lp?:number;name?:string;quantity?:string;unit?:string},index:number)=>({
-  id:id(),lp:index+1,name:String(item.name||"").trim(),quantity:String(item.quantity||"").trim(),unit:String(item.unit||"").trim()
- }));
+function szaryDoCanvas(g:Gray,scale:number){
+ const src=document.createElement("canvas");src.width=g.w;src.height=g.h;
+ const sctx=src.getContext("2d")!,img=sctx.createImageData(g.w,g.h);
+ for(let i=0;i<g.d.length;i++){img.data[i*4]=img.data[i*4+1]=img.data[i*4+2]=g.d[i];img.data[i*4+3]=255}
+ sctx.putImageData(img,0,0);
+ const out=document.createElement("canvas");out.width=Math.round(g.w*scale)+20;out.height=Math.round(g.h*scale)+20;
+ const ctx=out.getContext("2d")!;ctx.fillStyle="#fff";ctx.fillRect(0,0,out.width,out.height);ctx.imageSmoothingQuality="high";
+ ctx.drawImage(src,10,10,Math.round(g.w*scale),Math.round(g.h*scale));
+ return out;
+}
+function ocrPrzez(worker:TWorker):OcrFn{
+ let ostatnie="";
+ return async(img,o)=>{
+  if(img.w<3||img.h<3)return[];
+  const klucz=`${o.psm}|${o.whitelist||""}`;
+  if(klucz!==ostatnie){await worker.setParameters({tessedit_pageseg_mode:String(o.psm) as never,tessedit_char_whitelist:o.whitelist||""});ostatnie=klucz}
+  const r=await worker.recognize(szaryDoCanvas(img,o.scale),{},{blocks:true});
+  const out:OcrWord[]=[];let nr=0;
+  for(const b of r.data.blocks||[])for(const p of b.paragraphs)for(const l of p.lines){nr++;for(const w of l.words){
+   const t=w.text.trim();if(!t)continue;
+   out.push({t,x:(w.bbox.x0-10)/o.scale,y:(w.bbox.y0-10)/o.scale,w:(w.bbox.x1-w.bbox.x0)/o.scale,h:(w.bbox.y1-w.bbox.y0)/o.scale,conf:w.confidence,line:nr});
+  }}
+  return out;
+ };
+}
+async function wczytajPdf(file:File){
+ const pdfjs=await import("pdfjs-dist");
+ pdfjs.GlobalWorkerOptions.workerSrc=new URL("pdfjs-dist/build/pdf.worker.min.mjs",import.meta.url).toString();
+ return pdfjs.getDocument({data:await file.arrayBuffer()}).promise;
 }
 export default function Home(){
  const input=useRef<HTMLInputElement>(null);
  const [rows,setRows]=useState<Row[]>([]),[fileName,setFileName]=useState(""),[busy,setBusy]=useState(false),[progress,setProgress]=useState(0),[message,setMessage]=useState("Wczytaj fakturę, aby rozpocząć");
  useEffect(()=>{if("serviceWorker"in navigator)navigator.serviceWorker.register("/sw.js").catch(()=>undefined)},[]);
  const count=useMemo(()=>rows.filter(r=>r.name.trim()).length,[rows]);
- const update=(rowId:string,field:"name"|"quantity"|"unit",value:string)=>setRows(a=>a.map(r=>r.id===rowId?{...r,[field]:value}:r));
+ const update=(rowId:string,field:"name"|"quantity"|"unit",value:string)=>setRows(a=>a.map(r=>r.id===rowId?{...r,[field]:value,uwaga:undefined}:r));
  const remove=(rowId:string)=>setRows(a=>a.filter(r=>r.id!==rowId).map((r,i)=>({...r,lp:i+1})));
  const clearAll=()=>{
   if(!rows.length&&!fileName)return;
@@ -134,68 +155,82 @@ export default function Home(){
   setRows([]);setFileName("");setProgress(0);setMessage("Usunięto stare dane. Możesz wczytać nową fakturę.");
   if(input.current)input.current.value="";
  };
- async function images(file:File){
-  if(!file.type.includes("pdf")){const source=URL.createObjectURL(file);return[{full:await prepareForOcr(source),names:await prepareNameColumn(source)}]}
-  const pdfjs=await import("pdfjs-dist");
-  pdfjs.GlobalWorkerOptions.workerSrc=new URL("pdfjs-dist/build/pdf.worker.min.mjs",import.meta.url).toString();
-  const pdf=await pdfjs.getDocument({data:await file.arrayBuffer()}).promise,out:{full:string;names:string}[]=[];
-  for(let n=1;n<=pdf.numPages;n++){const page=await pdf.getPage(n),view=page.getViewport({scale:2}),canvas=document.createElement("canvas");canvas.width=view.width;canvas.height=view.height;await page.render({canvas,canvasContext:canvas.getContext("2d")!,viewport:view}).promise;const source=canvas.toDataURL("image/png");out.push({full:await prepareForOcr(source),names:await prepareNameColumn(source)})}
-  return out;
- }
- async function nativePdfText(file:File){
-  if(!file.type.includes("pdf"))return"";
-  const pdfjs=await import("pdfjs-dist");
-  pdfjs.GlobalWorkerOptions.workerSrc=new URL("pdfjs-dist/build/pdf.worker.min.mjs",import.meta.url).toString();
-  const pdf=await pdfjs.getDocument({data:await file.arrayBuffer()}).promise;let result="";
-  for(let n=1;n<=pdf.numPages;n++){
-   const page=await pdf.getPage(n),content=await page.getTextContent();
-   const lines=new Map<number,{x:number;text:string}[]>();
-   for(const raw of content.items){
-    const item=raw as {str?:string;transform?:number[]};
-    if(!item.str||!item.transform)continue;
-    const y=Math.round(item.transform[5]/3)*3,x=item.transform[4];
-    const line=lines.get(y)||[];line.push({x,text:item.str});lines.set(y,line);
-   }
-   result+=[...lines.entries()].sort((a,b)=>b[0]-a[0]).map(([,items])=>items.sort((a,b)=>a.x-b.x).map(v=>v.text).join(" ")).join("\n")+"\n";
-  }
-  return result;
- }
  async function read(files:File[]){
   if(!files.length)return;const file=files[0];
-  setBusy(true);setProgress(4);setFileName(files.length===1?file.name:`${files.length} strony: ${files.map(item=>item.name).join(", ")}`);setMessage("Przygotowuję dokument…");
+  setBusy(true);setProgress(3);setFileName(files.length===1?file.name:`${files.length} pliki: ${files.map(item=>item.name).join(", ")}`);setMessage("Przygotowuję dokument…");
+  let worker:TWorker|null=null;
+  const dajWorker=async()=>{
+   if(worker)return worker;
+   setMessage("Ładuję moduł rozpoznawania tekstu…");
+   const T=(await import("tesseract.js")).default;
+   worker=await T.createWorker(["pol","eng"],T.OEM.LSTM_ONLY,opcjeTesseract());
+   await worker.setParameters({preserve_interword_spaces:"1",user_defined_dpi:"300"});
+   return worker;
+  };
   try{
-   try{
-    setProgress(12);setMessage("AI odczytuje wszystkie pozycje faktury…");
-    const aiRows=await readWithAi(files);
-    setRows(aiRows);setProgress(100);setMessage(`AI rozpoznało ${aiRows.length} pozycji. Sprawdź dane.`);
-    return;
-   }catch(aiError){
-    console.warn("Odczyt AI niedostępny, uruchamiam OCR",aiError);
-    setMessage("AI jest chwilowo niedostępne — uruchamiam odczyt lokalny…");setProgress(5);
-   }
-   let text=await nativePdfText(file);
-   if(text.length<150||!/(nazwa|towaru|ilość|jedn)/i.test(text)){
-    const pages=await images(file),module=await import("tesseract.js"),T=module.default;
-    const worker=await T.createWorker(["pol","eng"],T.OEM.LSTM_ONLY,{logger:e=>{if(e.status==="recognizing text"){setProgress(Math.round(e.progress*100));setMessage("Odczytuję i porządkuję tabelę…")}}});
-    await worker.setParameters({tessedit_pageseg_mode:T.PSM.SINGLE_BLOCK,preserve_interword_spaces:"1",user_defined_dpi:"300"});
-    text="";let namesText="";
-    for(let i=0;i<pages.length;i++){
-     setMessage(`Odczytuję tabelę na stronie ${i+1} z ${pages.length}…`);const result=await worker.recognize(pages[i].full);text+="\n"+result.data.text;
-     setMessage(`Odczytuję nazwy na stronie ${i+1} z ${pages.length}…`);const nameResult=await worker.recognize(pages[i].names);namesText+="\n"+nameResult.data.text;
+   // lista stron do odczytu: [obraz lub gotowe pozycje z tekstu PDF]
+   const strony:({poz:Pozycja[]}|{obraz:()=>Promise<Gray>;zrodlo:()=>Promise<string>})[]=[];
+   for(const f of files){
+    if(f.type.includes("pdf")||/\.pdf$/i.test(f.name)){
+     const pdf=await wczytajPdf(f),tekst:PdfItem[][]=[];
+     for(let n=1;n<=pdf.numPages;n++){
+      const c=await (await pdf.getPage(n)).getTextContent();
+      tekst.push((c.items as {str?:string;transform?:number[];width?:number}[]).filter(i=>i.str!==undefined&&i.transform).map(i=>({str:i.str!,x:i.transform![4],y:i.transform![5],w:i.width||0})));
+     }
+     const poz=pozycjeZPdf(tekst);
+     if(poz.length){strony.push({poz});continue}
+     for(let n=1;n<=pdf.numPages;n++){
+      const render=async()=>{const page=await pdf.getPage(n),v1=page.getViewport({scale:1}),view=page.getViewport({scale:Math.min(8,SZEROKOSC/v1.width)}),canvas=document.createElement("canvas");canvas.width=view.width;canvas.height=view.height;await page.render({canvas,canvasContext:canvas.getContext("2d")!,viewport:view}).promise;return canvas};
+      strony.push({obraz:async()=>{const c=await render();return doSzarosci(c,c.width,c.height)},zrodlo:async()=>(await render()).toDataURL("image/png")});
+     }
+    }else{
+     strony.push({
+      obraz:async()=>{const bmp=await createImageBitmap(f,{imageOrientation:"from-image"});try{return doSzarosci(bmp,bmp.width,bmp.height)}finally{bmp.close()}},
+      zrodlo:async()=>URL.createObjectURL(f),
+     });
     }
-    await worker.terminate();
-    const found=sequenceRows(parseText(text),parseNames(namesText));
-    setRows(found);setProgress(100);setMessage(found.length?`Uwaga: AI nie zadziałało. Awaryjny OCR rozpoznał ${found.length} pozycji — wynik może zawierać błędy.`:"AI nie zadziałało, a awaryjny OCR nie rozpoznał tabeli. Spróbuj ponownie później.");
-    return;
-   }else{setProgress(90);setMessage("Odczytuję tabelę bezpośrednio z PDF…")}
-   const found=sequenceRows(parseText(text),new Map());setRows(found);setProgress(100);setMessage(found.length?`Rozpoznano ${found.length} pozycji. Sprawdź dane.`:"Nie rozpoznano tabeli. Dodaj pozycje ręcznie lub użyj wyraźniejszego skanu.");
-  }catch(e){console.error(e);setMessage("Nie udało się odczytać dokumentu. Spróbuj wyraźniejszego zdjęcia lub PDF.")}finally{setBusy(false)}
+   }
+   const wynik:Pozycja[]=[];
+   for(let i=0;i<strony.length;i++){
+    const s=strony[i],baza=Math.round((i/strony.length)*95),krok=95/strony.length;
+    if("poz" in s){wynik.push(...s.poz);continue}
+    const w=await dajWorker();
+    const naStronie=strony.length>1?` (strona ${i+1} z ${strony.length})`:"";
+    const obraz=await s.obraz(),ocr=ocrPrzez(w);
+    let poz=await odczytajTabele(obraz,ocr,(p,opis)=>{setProgress(baza+Math.round(p*krok/100));setMessage(opis+naStronie)});
+    if(!poz.length){
+     // tabela bez linii: kolumny wg położenia nagłówków
+     setMessage(`Nie znalazłem linii tabeli${naStronie} — szukam kolumn po nagłówkach…`);
+     poz=pozycjeZeSlow(await ocr(obraz,{psm:6,scale:1}),obraz.w);
+    }
+    if(!poz.length){
+     setMessage(`Czytam cały tekst${naStronie}…`);
+     poz=await odczytZwykly(await s.zrodlo());
+    }
+    wynik.push(...poz);
+   }
+   const found:Row[]=wynik.map((p,i)=>({id:id(),lp:i+1,name:p.name,quantity:p.quantity,unit:p.unit,uwaga:p.uwaga}));
+   setRows(found);setProgress(100);
+   const doSprawdzenia=found.filter(r=>r.uwaga).length;
+   setMessage(!found.length?"Nie rozpoznano tabeli. Dodaj pozycje ręcznie lub użyj wyraźniejszego zdjęcia/skanu.":`Rozpoznano ${found.length} pozycji.`+(doSprawdzenia?` ${doSprawdzenia} zaznaczono na żółto — sprawdź je.`:" Sprawdź dane przed eksportem."));
+  }catch(e){console.error(e);setMessage("Nie udało się odczytać dokumentu. Spróbuj wyraźniejszego zdjęcia lub PDF.")}finally{setBusy(false);if(worker)await (worker as TWorker).terminate()}
+ }
+ // awaryjnie: stary odczyt całego tekstu (dla faktur bez linii tabeli)
+ async function odczytZwykly(zrodlo:string):Promise<Pozycja[]>{
+  const full=await prepareForOcr(zrodlo),names=await prepareNameColumn(zrodlo);
+  const T=(await import("tesseract.js")).default;
+  const w=await T.createWorker(["pol","eng"],T.OEM.LSTM_ONLY,opcjeTesseract());
+  try{
+   await w.setParameters({tessedit_pageseg_mode:T.PSM.SINGLE_BLOCK,preserve_interword_spaces:"1",user_defined_dpi:"300"});
+   const text=(await w.recognize(full)).data.text,namesText=(await w.recognize(names)).data.text;
+   return sequenceRows(parseText(text),parseNames(namesText)).map(r=>({lp:r.lp,name:r.name,quantity:r.quantity,unit:r.unit,uwaga:"Odczyt bez tabeli — sprawdź"}));
+  }finally{await w.terminate()}
  }
  async function exportPdf(){
   const pdfMakeModule=await import("pdfmake/build/pdfmake");
   const fontsModule=await import("pdfmake/build/vfs_fonts");
   const pdfMake=pdfMakeModule.default;
-  pdfMake.vfs=fontsModule.default;
+  (pdfMake as unknown as {vfs:unknown}).vfs=fontsModule.default;
   const body=[
    [{text:"Lp.",bold:true},{text:"Nazwa towaru lub usługi",bold:true},{text:"Ilość",bold:true},{text:"Jedn.m",bold:true}],
    ...rows.map(r=>[String(r.lp),r.name,r.quantity,r.unit])
@@ -213,7 +248,7 @@ export default function Home(){
  async function exportWord(){
   const {AlignmentType,BorderStyle,Document,Packer,Paragraph,Table,TableCell,TableLayoutType,TableRow,TextRun,VerticalAlign,WidthType}=await import("docx");
   const widths=[650,7116,1300,1400],border={style:BorderStyle.SINGLE,size:4,color:"B7C1CE"};
-  const cell=(text:string,width:number,bold=false,alignment=AlignmentType.LEFT,fill?:string)=>new TableCell({
+  const cell=(text:string,width:number,bold=false,alignment:(typeof AlignmentType)[keyof typeof AlignmentType]=AlignmentType.LEFT,fill?:string)=>new TableCell({
    width:{size:width,type:WidthType.DXA},verticalAlign:VerticalAlign.CENTER,
    margins:{top:100,bottom:100,left:120,right:120},borders:{top:border,bottom:border,left:border,right:border},
    shading:fill?{fill}:undefined,
@@ -240,11 +275,11 @@ export default function Home(){
     <button className="dropzone" onClick={()=>input.current?.click()} disabled={busy}>{fileName?<FileText size={34}/>:<FileImage size={34}/>}<strong>{fileName||"Wybierz JPG lub PDF"}</strong><span>{fileName?"Kliknij, aby zmienić dokument":"Wyraźny skan daje najlepszy wynik"}</span></button>
     <input ref={input} hidden multiple type="file" accept="image/jpeg,image/png,application/pdf" onChange={e=>e.target.files&&read(Array.from(e.target.files))}/>
     <div className="status"><div>{busy&&<LoaderCircle className="spin" size={18}/>}<span>{message}</span></div>{(busy||progress>0)&&<div className="progress"><i style={{width:`${progress}%`}}/></div>}</div>
-    <div className="tip"><strong>Ważne</strong><p>Po rozpoznaniu sprawdź nazwy i ilości. Program daje etap kontroli przed utworzeniem PDF.</p></div>
+    <div className="tip"><strong>Ważne</strong><p>Odczyt działa bez AI, w całości na tym urządzeniu. Wiersze zaznaczone na żółto sprawdź — najedź na nie, żeby zobaczyć powód. Poprawka pola zdejmuje zaznaczenie.</p></div>
    </aside>
    <section className="table-card"><div className="table-heading"><div><span className="step">KROK 2</span><h2>Sprawdź rozpoznane pozycje</h2></div><span className="count">{count} pozycji</span></div>
     <div className="table-wrap"><table><thead><tr><th>Lp.</th><th>Nazwa towaru lub usługi</th><th>Ilość</th><th>Jedn.m</th><th aria-label="Usuń"/></tr></thead><tbody>
-     {rows.length?rows.map(r=><tr key={r.id}><td>{r.lp}</td><td><input value={r.name} onChange={e=>update(r.id,"name",e.target.value)} aria-label={`Nazwa pozycji ${r.lp}`}/></td><td><input className="short" value={r.quantity} onChange={e=>update(r.id,"quantity",e.target.value)} aria-label={`Ilość pozycji ${r.lp}`}/></td><td><input className="short" value={r.unit} onChange={e=>update(r.id,"unit",e.target.value)} aria-label={`Miara pozycji ${r.lp}`}/></td><td><button className="icon-btn" onClick={()=>remove(r.id)} aria-label={`Usuń pozycję ${r.lp}`}><Trash2 size={17}/></button></td></tr>):<tr><td colSpan={5} className="empty">Brak pozycji. Wczytaj dokument lub dodaj pusty wiersz.</td></tr>}
+     {rows.length?rows.map(r=><tr key={r.id} className={r.uwaga?"uwaga":undefined} title={r.uwaga}><td>{r.uwaga?<span className="znak" aria-label={r.uwaga}><TriangleAlert size={15}/></span>:null}{r.lp}</td><td><input value={r.name} onChange={e=>update(r.id,"name",e.target.value)} aria-label={`Nazwa pozycji ${r.lp}`}/></td><td><input className="short" value={r.quantity} onChange={e=>update(r.id,"quantity",e.target.value)} aria-label={`Ilość pozycji ${r.lp}`}/></td><td><input className="short" value={r.unit} onChange={e=>update(r.id,"unit",e.target.value)} aria-label={`Miara pozycji ${r.lp}`}/></td><td><button className="icon-btn" onClick={()=>remove(r.id)} aria-label={`Usuń pozycję ${r.lp}`}><Trash2 size={17}/></button></td></tr>):<tr><td colSpan={5} className="empty">Brak pozycji. Wczytaj dokument lub dodaj pusty wiersz.</td></tr>}
     </tbody></table></div>
     <div className="actions"><div className="action-group"><button className="secondary" onClick={()=>setRows(a=>[...a,{id:id(),lp:a.length+1,name:"",quantity:"1",unit:"szt."}])}><Plus size={18}/>Dodaj pozycję</button><button className="danger" onClick={clearAll} disabled={!rows.length&&!fileName}><Trash2 size={18}/>Usuń wszystko</button></div><div className="export-group"><button className="secondary" onClick={exportWord} disabled={!count}><Download size={18}/>Utwórz Word</button><button className="primary" onClick={exportPdf} disabled={!count}><Download size={18}/>Utwórz PDF</button></div></div>
    </section>
