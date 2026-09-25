@@ -1,10 +1,11 @@
 "use client";
 import {useEffect,useMemo,useRef,useState} from "react";
-import {FileImage,FileText,LoaderCircle,Plus,ScanText,Trash2,Download,ShieldCheck,TriangleAlert} from "lucide-react";
+import {FileImage,FileText,LoaderCircle,Plus,ScanText,Trash2,Download,ShieldCheck,TriangleAlert,Eye,EyeOff} from "lucide-react";
 import type {Worker as TWorker} from "tesseract.js";
 import {odczytajTabele,type Gray,type OcrFn,type OcrWord,type Pozycja} from "./tableOcr";
 import {pozycjeZPdf,pozycjeZeSlow,type PdfItem} from "./pdfTabela";
-type Row={id:string;lp:number;name:string;quantity:string;unit:string;uwaga?:string};
+import Podglad,{type Strona,type Zaznaczenie} from "./Podglad";
+type Row={id:string;lp:number;name:string;quantity:string;unit:string;uwaga?:string;strona?:number;y?:number;wys?:number;kat?:number};
 const id=()=>crypto.randomUUID();
 async function prepareForOcr(source:string){
  return new Promise<string>((resolve,reject)=>{
@@ -145,6 +146,9 @@ async function wczytajPdf(file:File){
 export default function Home(){
  const input=useRef<HTMLInputElement>(null);
  const [rows,setRows]=useState<Row[]>([]),[fileName,setFileName]=useState(""),[busy,setBusy]=useState(false),[progress,setProgress]=useState(0),[message,setMessage]=useState("Wczytaj fakturę, aby rozpocząć");
+ const [podglady,setPodglady]=useState<Strona[]>([]),[pokazPodglad,setPokazPodglad]=useState(true),[wybrany,setWybrany]=useState<string|null>(null);
+ const zaznaczenie=useMemo<Zaznaczenie>(()=>{const r=rows.find(r=>r.id===wybrany);return r&&r.strona!==undefined&&r.y!==undefined?{strona:r.strona,y:r.y,wys:r.wys||0.02,kat:r.kat}:null},[rows,wybrany]);
+ const zwolnijPodglady=()=>setPodglady(a=>{a.forEach(p=>URL.revokeObjectURL(p.src));return[]});
  useEffect(()=>{if("serviceWorker"in navigator)navigator.serviceWorker.register("/sw.js").catch(()=>undefined)},[]);
  const count=useMemo(()=>rows.filter(r=>r.name.trim()).length,[rows]);
  const update=(rowId:string,field:"name"|"quantity"|"unit",value:string)=>setRows(a=>a.map(r=>r.id===rowId?{...r,[field]:value,uwaga:undefined}:r));
@@ -152,7 +156,7 @@ export default function Home(){
  const clearAll=()=>{
   if(!rows.length&&!fileName)return;
   if(!window.confirm("Usunąć wszystkie pozycje i dane wczytanej faktury?"))return;
-  setRows([]);setFileName("");setProgress(0);setMessage("Usunięto stare dane. Możesz wczytać nową fakturę.");
+  setRows([]);zwolnijPodglady();setWybrany(null);setFileName("");setProgress(0);setMessage("Usunięto stare dane. Możesz wczytać nową fakturę.");
   if(input.current)input.current.value="";
  };
  async function read(files:File[]){
@@ -167,9 +171,17 @@ export default function Home(){
    await worker.setParameters({preserve_interword_spaces:"1",user_defined_dpi:"300"});
    return worker;
   };
+  zwolnijPodglady();setWybrany(null);
+  const nowePodglady:Strona[]=[];
+  const dodajPodglad=async(zrodlo:Blob|HTMLCanvasElement)=>{
+   const blob=zrodlo instanceof Blob?zrodlo:await new Promise<Blob>(ok=>zrodlo.toBlob(b=>ok(b!),"image/jpeg",0.9));
+   const bmp=await createImageBitmap(blob,{imageOrientation:"from-image"});const wym={w:bmp.width,h:bmp.height};bmp.close();
+   nowePodglady.push({src:URL.createObjectURL(blob),...wym});setPodglady([...nowePodglady]);
+   return nowePodglady.length-1;
+  };
   try{
    // lista stron do odczytu: [obraz lub gotowe pozycje z tekstu PDF]
-   const strony:({poz:Pozycja[]}|{obraz:()=>Promise<Gray>;zrodlo:()=>Promise<string>})[]=[];
+   const strony:({poz:Pozycja[];podglad:number}|{obraz:()=>Promise<Gray>;zrodlo:()=>Promise<string>;podglad:number})[]=[];
    for(const f of files){
     if(f.type.includes("pdf")||/\.pdf$/i.test(f.name)){
      const pdf=await wczytajPdf(f),tekst:PdfItem[][]=[];
@@ -177,14 +189,22 @@ export default function Home(){
       const c=await (await pdf.getPage(n)).getTextContent();
       tekst.push((c.items as {str?:string;transform?:number[];width?:number}[]).filter(i=>i.str!==undefined&&i.transform).map(i=>({str:i.str!,x:i.transform![4],y:i.transform![5],w:i.width||0})));
      }
-     const poz=pozycjeZPdf(tekst);
-     if(poz.length){strony.push({poz});continue}
+     const pierwsza=nowePodglady.length,wysokosci:number[]=[];
+     for(let n=1;n<=pdf.numPages;n++){
+      const page=await pdf.getPage(n),v1=page.getViewport({scale:1}),view=page.getViewport({scale:Math.min(3,1600/v1.width)}),canvas=document.createElement("canvas");
+      wysokosci.push(v1.height);canvas.width=view.width;canvas.height=view.height;
+      await page.render({canvas,canvasContext:canvas.getContext("2d")!,viewport:view}).promise;await dodajPodglad(canvas);
+     }
+     const poz=pozycjeZPdf(tekst,1,(y,nr)=>1-y/wysokosci[nr]);
+     if(poz.length){strony.push({poz,podglad:pierwsza});continue}
      for(let n=1;n<=pdf.numPages;n++){
       const render=async()=>{const page=await pdf.getPage(n),v1=page.getViewport({scale:1}),view=page.getViewport({scale:Math.min(8,SZEROKOSC/v1.width)}),canvas=document.createElement("canvas");canvas.width=view.width;canvas.height=view.height;await page.render({canvas,canvasContext:canvas.getContext("2d")!,viewport:view}).promise;return canvas};
-      strony.push({obraz:async()=>{const c=await render();return doSzarosci(c,c.width,c.height)},zrodlo:async()=>(await render()).toDataURL("image/png")});
+      strony.push({obraz:async()=>{const c=await render();return doSzarosci(c,c.width,c.height)},zrodlo:async()=>(await render()).toDataURL("image/png"),podglad:pierwsza+n-1});
      }
     }else{
+     const podglad=await dodajPodglad(f);
      strony.push({
+      podglad,
       obraz:async()=>{const bmp=await createImageBitmap(f,{imageOrientation:"from-image"});try{return doSzarosci(bmp,bmp.width,bmp.height)}finally{bmp.close()}},
       zrodlo:async()=>URL.createObjectURL(f),
      });
@@ -193,7 +213,7 @@ export default function Home(){
    const wynik:Pozycja[]=[];
    for(let i=0;i<strony.length;i++){
     const s=strony[i],baza=Math.round((i/strony.length)*95),krok=95/strony.length;
-    if("poz" in s){wynik.push(...s.poz);continue}
+    if("poz" in s){wynik.push(...s.poz.map(p=>({...p,strona:s.podglad+(p.strona||0)})));continue}
     const w=await dajWorker();
     const naStronie=strony.length>1?` (strona ${i+1} z ${strony.length})`:"";
     const obraz=await s.obraz(),ocr=ocrPrzez(w);
@@ -201,15 +221,15 @@ export default function Home(){
     if(!poz.length){
      // tabela bez linii: kolumny wg położenia nagłówków
      setMessage(`Nie znalazłem linii tabeli${naStronie} — szukam kolumn po nagłówkach…`);
-     poz=pozycjeZeSlow(await ocr(obraz,{psm:6,scale:1}),obraz.w);
+     poz=pozycjeZeSlow(await ocr(obraz,{psm:6,scale:1}),obraz.w,obraz.h);
     }
     if(!poz.length){
      setMessage(`Czytam cały tekst${naStronie}…`);
      poz=await odczytZwykly(await s.zrodlo());
     }
-    wynik.push(...poz);
+    wynik.push(...poz.map(p=>({...p,strona:s.podglad})));
    }
-   const found:Row[]=wynik.map((p,i)=>({id:id(),lp:i+1,name:p.name,quantity:p.quantity,unit:p.unit,uwaga:p.uwaga}));
+   const found:Row[]=wynik.map((p,i)=>({id:id(),lp:i+1,name:p.name,quantity:p.quantity,unit:p.unit,uwaga:p.uwaga,strona:p.strona,y:p.y,wys:p.wys,kat:p.kat}));
    setRows(found);setProgress(100);
    const doSprawdzenia=found.filter(r=>r.uwaga).length;
    setMessage(!found.length?"Nie rozpoznano tabeli. Dodaj pozycje ręcznie lub użyj wyraźniejszego zdjęcia/skanu.":`Rozpoznano ${found.length} pozycji.`+(doSprawdzenia?` ${doSprawdzenia} zaznaczono na żółto — sprawdź je.`:" Sprawdź dane przed eksportem."));
@@ -270,19 +290,20 @@ export default function Home(){
  }
  return <main className="app-shell">
   <header className="topbar"><div className="brand-mark"><ScanText size={25}/></div><div><h1>Faktura → Zestawienie</h1><p>Odczyt pozycji z JPG i PDF</p></div><div className="privacy"><ShieldCheck size={18}/><span>Dane przetwarzane na tym urządzeniu</span></div></header>
-  <section className="workspace">
+  <section className={"workspace"+(podglady.length&&pokazPodglad?" z-podgladem":"")}>
    <aside className="upload-card"><div className="step">KROK 1</div><h2>Wczytaj fakturę</h2>
     <button className="dropzone" onClick={()=>input.current?.click()} disabled={busy}>{fileName?<FileText size={34}/>:<FileImage size={34}/>}<strong>{fileName||"Wybierz JPG lub PDF"}</strong><span>{fileName?"Kliknij, aby zmienić dokument":"Wyraźny skan daje najlepszy wynik"}</span></button>
     <input ref={input} hidden multiple type="file" accept="image/jpeg,image/png,application/pdf" onChange={e=>e.target.files&&read(Array.from(e.target.files))}/>
     <div className="status"><div>{busy&&<LoaderCircle className="spin" size={18}/>}<span>{message}</span></div>{(busy||progress>0)&&<div className="progress"><i style={{width:`${progress}%`}}/></div>}</div>
     <div className="tip"><strong>Ważne</strong><p>Odczyt działa bez AI, w całości na tym urządzeniu. Wiersze zaznaczone na żółto sprawdź — najedź na nie, żeby zobaczyć powód. Poprawka pola zdejmuje zaznaczenie.</p></div>
    </aside>
-   <section className="table-card"><div className="table-heading"><div><span className="step">KROK 2</span><h2>Sprawdź rozpoznane pozycje</h2></div><span className="count">{count} pozycji</span></div>
+   <section className="table-card"><div className="table-heading"><div><span className="step">KROK 2</span><h2>Sprawdź rozpoznane pozycje</h2></div><div className="heading-right">{podglady.length>0&&<button className="secondary maly" onClick={()=>setPokazPodglad(p=>!p)}>{pokazPodglad?<EyeOff size={16}/>:<Eye size={16}/>}{pokazPodglad?"Ukryj fakturę":"Pokaż fakturę"}</button>}<span className="count">{count} pozycji</span></div></div>
     <div className="table-wrap"><table><thead><tr><th>Lp.</th><th>Nazwa towaru lub usługi</th><th>Ilość</th><th>Jedn.m</th><th aria-label="Usuń"/></tr></thead><tbody>
-     {rows.length?rows.map(r=><tr key={r.id} className={r.uwaga?"uwaga":undefined} title={r.uwaga}><td>{r.uwaga?<span className="znak" aria-label={r.uwaga}><TriangleAlert size={15}/></span>:null}{r.lp}</td><td><input value={r.name} onChange={e=>update(r.id,"name",e.target.value)} aria-label={`Nazwa pozycji ${r.lp}`}/></td><td><input className="short" value={r.quantity} onChange={e=>update(r.id,"quantity",e.target.value)} aria-label={`Ilość pozycji ${r.lp}`}/></td><td><input className="short" value={r.unit} onChange={e=>update(r.id,"unit",e.target.value)} aria-label={`Miara pozycji ${r.lp}`}/></td><td><button className="icon-btn" onClick={()=>remove(r.id)} aria-label={`Usuń pozycję ${r.lp}`}><Trash2 size={17}/></button></td></tr>):<tr><td colSpan={5} className="empty">Brak pozycji. Wczytaj dokument lub dodaj pusty wiersz.</td></tr>}
+     {rows.length?rows.map(r=><tr key={r.id} className={[r.uwaga?"uwaga":"",wybrany===r.id?"wybrany":""].join(" ").trim()||undefined} title={r.uwaga} onFocus={()=>setWybrany(r.id)} onClick={()=>setWybrany(r.id)}><td>{r.uwaga?<span className="znak" aria-label={r.uwaga}><TriangleAlert size={15}/></span>:null}{r.lp}</td><td><input value={r.name} onChange={e=>update(r.id,"name",e.target.value)} aria-label={`Nazwa pozycji ${r.lp}`}/></td><td><input className="short" value={r.quantity} onChange={e=>update(r.id,"quantity",e.target.value)} aria-label={`Ilość pozycji ${r.lp}`}/></td><td><input className="short" value={r.unit} onChange={e=>update(r.id,"unit",e.target.value)} aria-label={`Miara pozycji ${r.lp}`}/></td><td><button className="icon-btn" onClick={()=>remove(r.id)} aria-label={`Usuń pozycję ${r.lp}`}><Trash2 size={17}/></button></td></tr>):<tr><td colSpan={5} className="empty">Brak pozycji. Wczytaj dokument lub dodaj pusty wiersz.</td></tr>}
     </tbody></table></div>
     <div className="actions"><div className="action-group"><button className="secondary" onClick={()=>setRows(a=>[...a,{id:id(),lp:a.length+1,name:"",quantity:"1",unit:"szt."}])}><Plus size={18}/>Dodaj pozycję</button><button className="danger" onClick={clearAll} disabled={!rows.length&&!fileName}><Trash2 size={18}/>Usuń wszystko</button></div><div className="export-group"><button className="secondary" onClick={exportWord} disabled={!count}><Download size={18}/>Utwórz Word</button><button className="primary" onClick={exportPdf} disabled={!count}><Download size={18}/>Utwórz PDF</button></div></div>
    </section>
+   {podglady.length>0&&pokazPodglad&&<aside className="preview-card"><div className="preview-heading"><span className="step">PODGLĄD</span><h2>Faktura</h2></div><Podglad strony={podglady} zaznacz={zaznaczenie}/></aside>}
   </section><footer>Po wygenerowaniu pliku możesz go wydrukować albo zapisać w dokumentacji.</footer>
  </main>
 }

@@ -5,7 +5,8 @@
 export type Gray = { w: number; h: number; d: Uint8Array };
 export type OcrWord = { t: string; x: number; y: number; w: number; h: number; conf: number; line: number };
 export type OcrFn = (img: Gray, o: { psm: number; whitelist?: string; scale: number }) => Promise<OcrWord[]>;
-export type Pozycja = { lp: number; name: string; quantity: string; unit: string; uwaga?: string };
+// y, wys – położenie wiersza na stronie (ułamek wysokości), strona – nr strony w danym pliku
+export type Pozycja = { lp: number; name: string; quantity: string; unit: string; uwaga?: string; y?: number; wys?: number; strona?: number; kat?: number };
 
 type Linia = { k: number; c: number; lo: number; hi: number; pos: number };
 type Kol = { xc: number; wid: number; strip: Gray; hs: Gray; head: string; typ: string | null; brutto: boolean; netto: boolean; dy?: number };
@@ -223,7 +224,8 @@ export async function odczytajTabele(src: Gray, ocr: OcrFn, postep?: (p: number,
   const krok = (p: number, o: string) => postep?.(p, o);
   krok(5, "Prostuję zdjęcie…");
   let { hm } = maski(src);
-  const g = obroc(src, katPochylenia(hm, src.w, src.h));
+  const kat = katPochylenia(hm, src.w, src.h);
+  const g = obroc(src, kat);
   const m2 = maski(g); hm = m2.hm; const vm = m2.vm;
   const { w: W, h: H } = g;
   krok(12, "Szukam tabeli…");
@@ -460,7 +462,7 @@ export async function odczytajTabele(src: Gray, ocr: OcrFn, postep?: (p: number,
     const name = (r.nazwa || "").replace(/^[|\[\]{}()_\-—–=~,.:;'"`“”„‘’«»\s]+/, "").replace(/[|\[\]{}_—–=~\s]+$/, "").replace(/\s+/g, " ");
     if (!name) uwaga = "Nie odczytano nazwy";
     else if (!uwaga && Number(r["nazwa?"] ?? 100) < 45) uwaga = "Sprawdź nazwę";
-    return { lp: anchors[i].n, name, quantity: q === null ? "" : String(q).replace(".", ","), unit, uwaga: uwaga || undefined };
+    return { lp: anchors[i].n, name, quantity: q === null ? "" : String(q).replace(".", ","), unit, uwaga: uwaga || undefined, kat, ...(anchors[i].bot !== undefined ? { y: (best!.y0 + (anchors[i].top! + anchors[i].bot!) / 2) / H, wys: (anchors[i].bot! - anchors[i].top!) / H } : { y: (best!.y0 + ay[i]) / H, wys: rowh / H }) };
   });
   // brakująca jednostka → najczęstsza w tej fakturze (z ostrzeżeniem)
   const licz = new Map<string, number>();

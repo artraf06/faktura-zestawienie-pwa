@@ -41,10 +41,12 @@ function naglowek(items: PdfItem[], sk = 1): { k: Kolumny; y: number } | null {
 
 const liczba = (s: string) => /^\d+(?:[  ]?\d{3})*(?:[,.]\d+)?$/.test(s.trim());
 
-export function pozycjeZPdf(strony: PdfItem[][], sk = 1): Pozycja[] {
+// naUlamek: zamienia y z PDF (punkty, od dołu) na ułamek wysokości strony – do podświetlenia w podglądzie
+export function pozycjeZPdf(strony: PdfItem[][], sk = 1, naUlamek?: (y: number, strona: number) => number): Pozycja[] {
   const wynik: Pozycja[] = [];
   let kol: Kolumny | null = null;
-  for (const wszystkie of strony) {
+  for (const [nrStrony, wszystkie] of strony.entries()) {
+    const gdzie = (y: number) => (naUlamek ? { y: naUlamek(y, nrStrony), wys: 0.018, strona: nrStrony } : { strona: nrStrony });
     const items = wszystkie.filter(i => i.str.trim());
     const nag = naglowek(items, sk);
     if (nag) kol = nag.k;
@@ -69,7 +71,7 @@ export function pozycjeZPdf(strony: PdfItem[][], sk = 1): Pozycja[] {
       }
       const nazwa = l.items.filter((i, idx) => !(jestLp && idx === 0) && i.x < kol!.nazwaKoniec && i.x >= kol!.nazwaX - 120 * sk).map(i => i.str).join(" ").replace(/\s+/g, " ").trim();
       if (jestLp) {
-        wynik.push({ lp: Number(pierwszy.str.replace(".", "")), name: nazwa, quantity: qty.replace(".", ","), unit: unit.replace(/,$/, "") });
+        wynik.push({ lp: Number(pierwszy.str.replace(".", "")), name: nazwa, quantity: qty.replace(".", ","), unit: unit.replace(/,$/, ""), ...gdzie(l.y) });
       } else if (wynik.length && nazwa && !qty) {
         const p = wynik[wynik.length - 1];
         p.name = (p.name + " " + nazwa).trim();
@@ -79,7 +81,7 @@ export function pozycjeZPdf(strony: PdfItem[][], sk = 1): Pozycja[] {
         if (nazwa) p.name = (p.name + " " + nazwa).trim();
       } else if (qty && nazwa && /[a-ząćęłńóśźż]{3}/i.test(nazwa) && !KONIEC.test(nazwa)) {
         // nieczytelny numer Lp, ale jest nazwa i ilość → nowa pozycja
-        wynik.push({ lp: (wynik[wynik.length - 1]?.lp || 0) + 1, name: nazwa.replace(/^\S{1,3}\s+(?=\S{3})/, m => (/\d|[a-z]{1,2}\b/i.test(m) && m.trim().length <= 2 ? "" : m)), quantity: qty.replace(".", ","), unit: unit.replace(/,$/, "") });
+        wynik.push({ lp: (wynik[wynik.length - 1]?.lp || 0) + 1, name: nazwa.replace(/^\S{1,3}\s+(?=\S{3})/, m => (/\d|[a-z]{1,2}\b/i.test(m) && m.trim().length <= 2 ? "" : m)), quantity: qty.replace(".", ","), unit: unit.replace(/,$/, ""), ...gdzie(l.y) });
       }
     }
   }
@@ -87,8 +89,8 @@ export function pozycjeZPdf(strony: PdfItem[][], sk = 1): Pozycja[] {
 }
 
 // zdjęcie/skan bez linii tabeli: słowa z OCR (współrzędne w pikselach) → ten sam parser kolumn
-export function pozycjeZeSlow(slowa: { t: string; x: number; y: number; w: number; h: number }[], szerokosc: number): Pozycja[] {
+export function pozycjeZeSlow(slowa: { t: string; x: number; y: number; w: number; h: number }[], szerokosc: number, wysokosc: number): Pozycja[] {
   const sk = szerokosc / 595; // piksele na punkt strony A4
   const items = slowa.map(s => ({ str: s.t, x: s.x, y: -(s.y + s.h / 2), w: s.w }));
-  return pozycjeZPdf([items], sk).map(p => ({ ...p, uwaga: p.uwaga || "Odczyt bez linii tabeli — sprawdź" }));
+  return pozycjeZPdf([items], sk, y => -y / wysokosc).map(p => ({ ...p, uwaga: p.uwaga || "Odczyt bez linii tabeli — sprawdź" }));
 }
