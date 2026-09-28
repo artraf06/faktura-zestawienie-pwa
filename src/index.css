@@ -43,3 +43,27 @@ table.rozl select{min-width:240px}
 @media(max-width:850px){.zakladki~.workspace.z-podgladem{grid-template-columns:1fr}}
 table.rozl{min-width:820px}table.rozl td:nth-child(4) select{min-width:0;width:128px}table.rozl td:nth-child(2){min-width:190px}
 table.rozl td:nth-child(3) select{min-width:210px}table.rozl td:nth-child(5) input{width:64px}
+.podglad-niepewny{position:absolute;left:0;right:0;background:#ffe60055;border-top:1px solid #e0b400;border-bottom:1px solid #e0b400;mix-blend-mode:multiply}
+.podglad-zakladki{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.podglad-zakladki .step{margin:0}
+.przelacznik{display:flex;gap:4px;flex-wrap:wrap}.przelacznik button{border:1px solid var(--line);background:white;color:var(--ink);padding:6px 11px;border-radius:9px;font-weight:700;font-size:13px;cursor:pointer}.przelacznik button.aktywna{background:#10233d;color:white;border-color:#10233d}
+.podglad-dzielony{flex:1;min-height:0;display:flex;flex-direction:column}.podglad-dzielony .czesc{flex:1;min-height:0;display:flex;flex-direction:column}.podglad-dzielony.oba .czesc+.czesc{border-top:3px solid var(--line)}
+.xls{display:flex;flex-direction:column;flex:1;min-height:0}
+.xls-pasek{display:flex;align-items:center;gap:12px;padding:8px 14px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);flex-wrap:wrap;font-size:12px;color:var(--muted)}
+.xls-leg{display:inline-flex;align-items:center;gap:5px}.xls-leg i{width:14px;height:14px;border-radius:3px;border:1px solid #0002}.l-zolty{background:#ffeb3b}.l-zielony{background:#c8ecc9}.l-plik{background:linear-gradient(135deg,#ffff00 50%,#fff 50%)}
+.xls-filtr{margin-left:auto;display:inline-flex;gap:5px;align-items:center;cursor:pointer}
+.xls-okno{flex:1;min-height:0;overflow:auto;background:#f7f9fb}
+table.xls-tab{min-width:0;width:max-content;font-size:12px;border-collapse:separate;border-spacing:0;background:white}
+.xls-tab th{position:sticky;top:0;z-index:2;background:#e9eef4;color:#33475c;text-transform:none;letter-spacing:0;font-size:11px;padding:6px 7px;border-right:1px solid #d5dde7;max-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;width:auto!important;text-align:left!important}
+.xls-tab th.xls-mies{background:#dde8f7;text-align:center!important}
+.xls-tab td{padding:4px 7px;border-bottom:1px solid #e6ebf0;border-right:1px solid #eef1f5;white-space:nowrap;max-width:140px;overflow:hidden;text-overflow:ellipsis;background:white;width:auto!important;text-align:left!important;position:relative}
+.xls-tab td.xls-nr,.xls-tab th.xls-nr{color:#8a97a8;background:#f1f4f8;text-align:right!important;font-size:11px}
+.xls-tab .xls-lepki0{position:sticky;left:0;z-index:1;min-width:44px}.xls-tab .xls-lepki1{position:sticky;left:44px;z-index:1;max-width:220px;min-width:220px;box-shadow:2px 0 0 #d5dde7}
+.xls-tab th.xls-lepki0,.xls-tab th.xls-lepki1{z-index:3}
+.xls-tab tr.xls-zwpisem td{background:#fbfcfe}.xls-tab tr.xls-wybrany td{background:#e8f0fe}
+.xls-tab td.xls-nowy-uwaga{background:#ffeb3b!important;cursor:pointer}.xls-tab td.xls-nowy-ok{background:#c8ecc9!important;cursor:pointer}
+.xls-tab td.xls-cel{outline:2px solid var(--blue);outline-offset:-2px}
+.xls-tab td b{color:#10233d}.xls-bylo{color:#7a8797;margin-right:3px}.xls-bylo:empty{display:none}
+.xls-tab td.xls-notka::after{content:"";position:absolute;top:0;right:0;border-left:6px solid transparent;border-top:6px solid #d32f2f}
+.zakladki~.workspace.z-podgladem.bez-faktury{grid-template-columns:270px minmax(0,1fr) minmax(0,1.5fr)}
+@media(max-width:1250px){.zakladki~.workspace.z-podgladem.bez-faktury{grid-template-columns:270px minmax(0,1fr)}}
+@media(max-width:850px){.zakladki~.workspace.z-podgladem.bez-faktury{grid-template-columns:1fr}}

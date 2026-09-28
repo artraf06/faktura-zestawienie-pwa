@@ -5,7 +5,7 @@ import type { Pozycja } from "./tableOcr";
 
 export type WierszUmowy = { row: number; lp: string; nazwa: string; opis: string; jm: string; ilosc: number | null; cena: number | null; wykorzystano: number };
 export type Miesiac = { col: number; rok: number; mies: number; etykieta: string };
-export type Umowa = { wb: ExcelJS.Workbook; arkusz: ExcelJS.Worksheet; wiersze: WierszUmowy[]; miesiace: Miesiac[]; nazwaPliku: string; kolNazwa: number; kolCena: number };
+export type Umowa = { wb: ExcelJS.Workbook; arkusz: ExcelJS.Worksheet; wiersze: WierszUmowy[]; miesiace: Miesiac[]; nazwaPliku: string; kolNazwa: number; kolCena: number; kolLp: number; wNaglowek: number };
 export type Propozycja = { wiersz: WierszUmowy; punkty: number; nazwaPkt: number; cenaZgodna: boolean };
 export type Przypisanie = { poz: Pozycja; ilosc: number; row: number | null; col: number | null; pewne: boolean; powod: string; kandydaci: Propozycja[]; wlacz: boolean };
 
@@ -15,7 +15,7 @@ const PL: Record<string, string> = { ą: "a", ć: "c", ę: "e", ł: "l", ń: "n"
 export const norm = (t: unknown) => String(t ?? "").toLowerCase().replace(/[ąćęłńóśźż]/g, c => PL[c]).replace(/[^a-z0-9]+/g, " ").trim();
 
 /** Wartość komórki jako tekst (także formuły, tekst sformatowany). */
-function tekstKomorki(v: ExcelJS.CellValue): string {
+export function tekstKomorki(v: ExcelJS.CellValue): string {
   if (v === null || v === undefined) return "";
   if (typeof v === "object") {
     if ("richText" in v) return v.richText.map(r => r.text).join("");
@@ -78,7 +78,7 @@ export async function wczytajUmowe(dane: ArrayBuffer, nazwaPliku: string): Promi
         wiersze.push({ row: rr, lp: kolLp ? tekstKomorki(w.getCell(kolLp).value) : "", nazwa, opis: kolOpis ? tekstKomorki(w.getCell(kolOpis).value).replace(/\s+/g, " ").trim() : "",
           jm: kolJm ? tekstKomorki(w.getCell(kolJm).value).trim() : "", ilosc: kolIlosc ? liczba(w.getCell(kolIlosc).value) : null, cena, wykorzystano });
       }
-      if (wiersze.length) return { wb, arkusz: ws, wiersze, miesiace, nazwaPliku, kolNazwa, kolCena };
+      if (wiersze.length) return { wb, arkusz: ws, wiersze, miesiace, nazwaPliku, kolNazwa, kolCena, kolLp, wNaglowek: r };
     }
   }
   throw new Error("Nie znalazłem tabeli z nazwami towarów i kolumnami miesięcy (np. „nazwa artykułu”, „maj”, „czerwiec”).");

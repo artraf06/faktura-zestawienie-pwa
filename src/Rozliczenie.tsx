@@ -1,7 +1,8 @@
 import {useEffect,useMemo,useRef,useState} from "react";
 import {FileSpreadsheet,FileText,LoaderCircle,Download,Check,TriangleAlert,RotateCcw,Plus} from "lucide-react";
 import type {Worker as TWorker} from "tesseract.js";
-import Podglad,{type Strona,type Zaznaczenie} from "./Podglad";
+import Podglad,{type Strona,type Zaznaczenie,type Znacznik} from "./Podglad";
+import ExcelPodglad,{type Oczekujacy} from "./ExcelPodglad";
 import {czytajFakture,opcjeTesseract} from "./odczyt";
 import {wczytajUmowe,przypisz,numerIData,wpisz,doPliku,juzDodana,skrot,zl,miesiacDla,type Umowa,type Przypisanie} from "./rozliczenie";
 
@@ -23,6 +24,7 @@ export default function Rozliczenie(){
  const [faktura,setFaktura]=useState<Faktura|null>(null);
  const [busy,setBusy]=useState(false),[postep,setPostep]=useState(0),[msg,setMsg]=useState("Wczytaj Excel z formularzem cenowym (umową).");
  const [historia,setHistoria]=useState<string[]>([]),[zmiany,setZmiany]=useState(false),[wybrany,setWybrany]=useState<number|null>(null);
+ const [widok,setWidok]=useState<"oba"|"faktura"|"excel">("oba");
 
  useEffect(()=>{(async()=>{const z=await wczytajLokalnie();if(!z)return;try{const u=await wczytajUmowe(z.dane,z.nazwa);setUmowa(u);setMsg(`Przywrócono „${z.nazwa}” z ${new Date(z.kiedy).toLocaleString("pl-PL")}. Możesz dodawać kolejne faktury.`)}catch{/* stary zapis */}})()},[]);
 
@@ -86,9 +88,19 @@ export default function Rozliczenie(){
  }
 
  const opcjeWierszy=useMemo(()=>umowa?umowa.wiersze.map(w=>({row:w.row,opis:`${w.lp?w.lp+". ":""}${w.nazwa.slice(0,70)}${w.opis?" – "+w.opis.slice(0,40):""} · ${w.cena!==null?zl(w.cena):"brak ceny"}`})):[],[umowa,wersja]);
+ const stan=(p:Przypisanie)=>{const w=umowa?.wiersze.find(x=>x.row===p.row);const zostalo=w&&w.ilosc!==null?w.ilosc-w.wykorzystano:null;const przekroczy=zostalo!==null&&p.wlacz&&p.ilosc>zostalo;return {w,zostalo,przekroczy,zolty:p.wlacz&&(!p.pewne||przekroczy)}};
+ const znaczniki:Znacznik[]=useMemo(()=>faktura?faktura.przypisania.flatMap((p,i)=>stan(p).zolty&&p.poz.strona!==undefined&&p.poz.y!==undefined?[{id:i,strona:p.poz.strona,y:p.poz.y,wys:p.poz.wys||0.02,kat:p.poz.kat}]:[]):[],
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [faktura,umowa,wersja]);
+ const oczekujace:Oczekujacy[]=useMemo(()=>faktura?faktura.przypisania.flatMap((p,i)=>p.wlacz&&p.row&&p.col&&p.ilosc?[{row:p.row,col:p.col,ilosc:p.ilosc,pewne:!stan(p).zolty,idx:i}]:[]):[],
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [faktura,umowa,wersja]);
+ const wybierz=(i:number)=>{setWybrany(i);document.querySelector(`tr[data-poz="${i}"]`)?.scrollIntoView({block:"nearest",behavior:"smooth"})};
+ const maFakture=!!faktura?.podglady.length;
+ const pokazFakture=maFakture&&widok!=="excel",pokazExcel=!!umowa&&(widok!=="faktura"||!maFakture);
  const zazn:Zaznaczenie=useMemo(()=>{const p=wybrany!==null?faktura?.przypisania[wybrany]?.poz:null;return p&&p.strona!==undefined&&p.y!==undefined?{strona:p.strona,y:p.y,wys:p.wys||0.02,kat:p.kat}:null},[wybrany,faktura]);
 
- return <section className={"workspace"+(faktura?.podglady.length?" z-podgladem":"")}>
+ return <section className={"workspace"+(umowa?" z-podgladem":"")+(umowa&&!faktura?" bez-faktury":"")}>
   <aside className="upload-card">
    <div className="step">KROK 1</div><h2>Excel z umową</h2>
    <button className="dropzone maly-drop" onClick={()=>inExcel.current?.click()} disabled={busy}><FileSpreadsheet size={30}/><strong>{umowa?umowa.nazwaPliku:"Wybierz plik .xlsx"}</strong><span>{umowa?`${umowa.wiersze.length} pozycji · ${umowa.miesiace.length} miesięcy`:"formularz cenowy z kolumnami miesięcy"}</span></button>
@@ -118,11 +130,8 @@ export default function Rozliczenie(){
    <div className="table-wrap"><table className="rozl"><thead><tr><th/><th>Z faktury</th><th>Pozycja w umowie</th><th>Miesiąc</th><th>Ilość</th><th>Status</th></tr></thead><tbody>
     {!faktura?<tr><td colSpan={6} className="empty">{umowa?"Dodaj fakturę – tu pojawią się jej pozycje dopasowane do umowy.":"Najpierw wczytaj Excel z umową."}</td></tr>:
      faktura.przypisania.map((p,i)=>{
-      const w=umowa!.wiersze.find(x=>x.row===p.row);
-      const zostalo=w&&w.ilosc!==null?w.ilosc-w.wykorzystano:null;
-      const przekroczy=zostalo!==null&&p.wlacz&&p.ilosc>zostalo;
-      const zolty=p.wlacz&&(!p.pewne||przekroczy);
-      return <tr key={i} className={[zolty?"uwaga":"",!p.wlacz?"wylaczony":"",wybrany===i?"wybrany":""].join(" ")} onClick={()=>setWybrany(i)}>
+      const {w,zostalo,przekroczy,zolty}=stan(p);
+      return <tr key={i} data-poz={i} className={[zolty?"uwaga":"",!p.wlacz?"wylaczony":"",wybrany===i?"wybrany":""].join(" ")} onClick={()=>setWybrany(i)}>
        <td><input type="checkbox" checked={p.wlacz} onChange={e=>zmien(i,{wlacz:e.target.checked})} aria-label="Wpisz tę pozycję"/></td>
        <td className="z-faktury"><b>{p.poz.name||"—"}</b><small>{p.poz.quantity} {p.poz.unit} · netto {p.poz.cenaNetto!==undefined?zl(p.poz.cenaNetto):"?"}{p.poz.cenaWyliczona?" (wyliczona)":""}</small></td>
        <td><select value={p.row??""} onChange={e=>{const row=e.target.value?Number(e.target.value):null;const k=p.kandydaci.find(k=>k.wiersz.row===row);zmien(i,{row,wlacz:!!row,pewne:!!row&&!!k?.cenaZgodna,powod:row?(k?.cenaZgodna?"":"Wybrane ręcznie – cena inna niż w umowie"):""})}}>
@@ -139,6 +148,18 @@ export default function Rozliczenie(){
    {faktura&&<div className="actions"><div className="action-group"><button className="secondary" onClick={()=>{faktura.podglady.forEach(p=>URL.revokeObjectURL(p.src));setFaktura(null)}}>Anuluj tę fakturę</button></div>
     <div className="export-group"><button className="primary" onClick={zatwierdz} disabled={!faktura.przypisania.some(p=>p.wlacz)}><Plus size={18}/>Wpisz do Excela ({faktura.przypisania.filter(p=>p.wlacz).length})</button></div></div>}
   </section>
-  {faktura&&faktura.podglady.length>0&&<aside className="preview-card"><div className="preview-heading"><span className="step">PODGLĄD</span><h2>Faktura</h2></div><Podglad strony={faktura.podglady} zaznacz={zazn}/></aside>}
+  {umowa&&<aside className="preview-card">
+   <div className="preview-heading podglad-zakladki"><span className="step">PODGLĄD</span>
+    {maFakture?<div className="przelacznik">
+     <button className={widok==="oba"?"aktywna":""} onClick={()=>setWidok("oba")}>Faktura + Excel</button>
+     <button className={widok==="faktura"?"aktywna":""} onClick={()=>setWidok("faktura")}>Faktura</button>
+     <button className={widok==="excel"?"aktywna":""} onClick={()=>setWidok("excel")}>Excel</button>
+    </div>:<h2>Excel</h2>}
+   </div>
+   <div className={"podglad-dzielony"+(pokazFakture&&pokazExcel?" oba":"")}>
+    {pokazFakture&&<div className="czesc"><Podglad strony={faktura!.podglady} zaznacz={zazn} znaczniki={znaczniki} onZnacznik={wybierz}/></div>}
+    {pokazExcel&&<div className="czesc"><ExcelPodglad umowa={umowa} wersja={wersja} oczekujace={oczekujace} wybrany={wybrany} onWybierz={wybierz}/></div>}
+   </div>
+  </aside>}
  </section>;
 }

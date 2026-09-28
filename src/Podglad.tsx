@@ -7,7 +7,9 @@ export type Zaznaczenie={strona:number;y:number;wys:number;kat?:number}|null;
 const LUPA_R=95,LUPA_ZOOM=2.5,MIN_S=0.05,MAX_S=8;
 
 // Podgląd faktury: przesuwanie (przeciągnij), zoom (kółko, przyciski, dwa palce, dwuklik), lupa, podświetlenie wiersza
-export default function Podglad({strony,zaznacz}:{strony:Strona[];zaznacz:Zaznaczenie}){
+export type Znacznik={strona:number;y:number;wys:number;kat?:number;id:number};
+
+export default function Podglad({strony,zaznacz,znaczniki=[],onZnacznik}:{strony:Strona[];zaznacz:Zaznaczenie;znaczniki?:Znacznik[];onZnacznik?:(id:number)=>void}){
  const box=useRef<HTMLDivElement>(null);
  const [nr,setNr]=useState(0);
  const [v,setV]=useState({s:1,x:0,y:0});
@@ -93,6 +95,7 @@ export default function Podglad({strony,zaznacz}:{strony:Strona[];zaznacz:Zaznac
   <div ref={box} className={"podglad-okno"+(lupa?" z-lupa":"")} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up} onPointerLeave={e=>{if(e.pointerType==="mouse")setKursor(null)}} onDoubleClick={e=>{const p=punkt(e);zoomWokol(p.x,p.y,2)}}>
    <div className="podglad-warstwa" style={{width:strona.w,height:strona.h,transform:`translate(${v.x}px,${v.y}px) scale(${v.s})`}}>
     <img src={strona.src} width={strona.w} height={strona.h} alt={`Strona ${nr+1} faktury`} draggable={false}/>
+    {znaczniki.filter(z=>z.strona===nr).map(z=><div key={z.id} className="podglad-niepewny" title="Pozycja do sprawdzenia — kliknij" onClick={()=>onZnacznik?.(z.id)} style={{top:(z.y-z.wys/2)*strona.h,height:Math.max(z.wys,0.012)*strona.h,transform:z.kat?`rotate(${z.kat}deg)`:undefined,cursor:onZnacznik?"pointer":undefined}}/>)}
     {pas&&<div className="podglad-wiersz" style={{top:(pas.y-pas.wys/2)*strona.h,height:Math.max(pas.wys,0.012)*strona.h,borderWidth:2/v.s,transform:pas.kat?`rotate(${pas.kat}deg)`:undefined}}/>}
    </div>
    {lupa&&kursor&&<div className="lupa" style={{
