@@ -131,20 +131,37 @@ export function miesiacDla(data: Date | null, umowa: Umowa): Miesiac | null {
 export function przypisz(pozycje: Pozycja[], umowa: Umowa, data: Date | null): Przypisanie[] {
   const m = miesiacDla(data, umowa);
   return pozycje.map(poz => {
-    const kand = propozycje(poz, umowa);
+    let kand = propozycje(poz, umowa);
     const ilosc = Number(String(poz.quantity).replace(",", ".")) || 0;
     const [a, b] = kand;
-    let pewne = false, powod = "";
-    if (!a || a.punkty < 0.45) powod = "Nie znalazłem tej pozycji w umowie – wybierz ręcznie";
-    else if (!a.cenaZgodna) powod = poz.cenaNetto === undefined ? "Brak ceny netto na fakturze – sprawdź pozycję"
-      : `Cena netto z faktury ${zl(poz.cenaNetto)} ≠ w umowie ${a.wiersz.cena === null ? "brak" : zl(a.wiersz.cena)}`;
-    else if (a.nazwaPkt < 0.4) powod = "Cena się zgadza, ale nazwa podobna tylko częściowo";
-    else if (b && b.cenaZgodna && a.punkty - b.punkty < 0.12) powod = `Dwie podobne pozycje (Lp. ${a.wiersz.lp} i ${b.wiersz.lp}) – sprawdź`;
-    else pewne = true;
+    let pewne = false, powod = "", row: number | null = null;
+    if (a && a.punkty >= 0.45 && a.nazwaPkt >= 0.3) {
+      // 1) dopasowanie po nazwie (cena jako potwierdzenie)
+      row = a.wiersz.row;
+      if (!a.cenaZgodna) powod = poz.cenaNetto === undefined ? "Brak ceny netto na fakturze – sprawdź pozycję"
+        : `Cena netto z faktury ${zl(poz.cenaNetto)} ≠ w umowie ${a.wiersz.cena === null ? "brak" : zl(a.wiersz.cena)}`;
+      else if (a.nazwaPkt < 0.4) powod = "Cena się zgadza, ale nazwa podobna tylko częściowo";
+      else if (b && b.cenaZgodna && a.punkty - b.punkty < 0.12) powod = `Dwie podobne pozycje (Lp. ${a.wiersz.lp} i ${b.wiersz.lp}) – sprawdź`;
+      else pewne = true;
+    } else if (poz.cenaNetto !== undefined) {
+      // 2) nazwa nie pasuje → ostatnia szansa: ta sama cena netto co w umowie
+      const tol = poz.cenaWyliczona ? 0.021 : 0.011;
+      const poCenie = umowa.wiersze.filter(w => w.cena !== null && Math.abs(w.cena - poz.cenaNetto!) <= tol)
+        .map(w => ({ wiersz: w, nazwaPkt: podobienstwo(poz.name, w.nazwa, w.opis), cenaZgodna: true, punkty: 0 }))
+        .map(k => ({ ...k, punkty: k.nazwaPkt + 0.45 })).sort((x, y) => y.punkty - x.punkty);
+      if (poCenie.length) {
+        row = poCenie[0].wiersz.row;
+        powod = poCenie.length === 1
+          ? `Nazwa nie pasuje – dopasowano po cenie netto ${zl(poz.cenaNetto)} (Lp. ${poCenie[0].wiersz.lp})`
+          : `Nazwa nie pasuje – cenę ${zl(poz.cenaNetto)} ma ${poCenie.length} pozycji (Lp. ${poCenie.slice(0, 5).map(k => k.wiersz.lp).join(", ")}${poCenie.length > 5 ? "…" : ""}) – wybierz właściwą`;
+        // kandydaci z tą ceną na górze listy
+        kand = [...poCenie.slice(0, 12), ...kand.filter(k => !poCenie.some(c => c.wiersz.row === k.wiersz.row))].slice(0, 15);
+      } else powod = "Nie znalazłem tej pozycji w umowie (ani po nazwie, ani po cenie) – wybierz ręcznie";
+    } else powod = "Nie znalazłem tej pozycji w umowie, a na fakturze brak ceny netto – wybierz ręcznie";
     if (pewne && poz.cenaWyliczona) { pewne = false; powod = "Cena netto wyliczona z wartości / brutto – sprawdź"; }
     if (pewne && poz.uwaga) { pewne = false; powod = `Odczyt faktury: ${poz.uwaga.toLowerCase()}`; }
     if (!m) powod = powod || "Data faktury poza okresem umowy – wybierz miesiąc";
-    return { poz, ilosc, row: a && a.punkty >= 0.45 ? a.wiersz.row : null, col: m?.col ?? null, pewne: pewne && !!m, powod, kandydaci: kand, wlacz: !!a && a.punkty >= 0.45 };
+    return { poz, ilosc, row, col: m?.col ?? null, pewne: pewne && !!m, powod, kandydaci: kand, wlacz: row !== null };
   });
 }
 
