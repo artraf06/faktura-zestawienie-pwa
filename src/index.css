@@ -21,3 +21,25 @@ tr.wybrany td{background:#e8f0fe}tr.wybrany.uwaga td{background:#fbeec2}tbody tr
 .podglad-pusty{padding:30px;color:var(--muted);text-align:center}
 @media(max-width:1250px){.workspace.z-podgladem{grid-template-columns:300px minmax(0,1fr)}.workspace.z-podgladem .preview-card{grid-column:1/-1;position:relative;top:0;height:75vh}}
 @media(max-width:850px){.workspace.z-podgladem{grid-template-columns:1fr}.workspace.z-podgladem .preview-card{height:70vh}.heading-right{flex-direction:column;align-items:flex-end}}
+.zakladki{max-width:1440px;margin:18px auto 0;padding:0 clamp(16px,4vw,48px);display:flex;gap:6px;flex-wrap:wrap}
+.zakladki button{border:1px solid var(--line);background:white;color:var(--ink);padding:10px 18px;border-radius:11px;font-weight:700;font-size:14px;cursor:pointer}
+.zakladki button.aktywna{background:#10233d;color:white;border-color:#10233d}
+.zakladki+.workspace{padding-top:16px}
+.maly-drop{min-height:120px}.krok2{margin-top:22px}.rozl-akcje{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
+.rozl-akcje button{min-height:44px;border-radius:10px;padding:0 14px;font-size:14px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;gap:8px;cursor:pointer}
+.szeroki{width:100%}.tip p+p{margin-top:2px}.szary-tip{background:#f3f6fa;border-color:#dfe5ee;margin-top:12px}.szary-tip strong{color:#33475c}.szary-tip p{color:#526174}
+.faktura-meta{display:flex;gap:10px;flex-wrap:wrap}.faktura-meta label{display:flex;flex-direction:column;font-size:12px;font-weight:700;color:#526174;gap:3px}
+.faktura-meta input{min-height:36px;border:1px solid #c4cfdb;border-radius:8px;padding:0 9px;font:inherit;font-size:14px}
+.ostrzezenie{display:flex;gap:8px;align-items:center;margin:12px 20px 0;padding:10px 14px;border-radius:10px;background:#fdecea;color:#8e1b1b;border:1px solid #f2c0c0;font-size:14px}
+table.rozl{min-width:980px}table.rozl td{vertical-align:top}table.rozl th:first-child,table.rozl td:first-child{width:36px}
+table.rozl select{width:100%;max-width:420px;min-height:36px;border:1px solid #c4cfdb;border-radius:8px;padding:0 6px;font:inherit;font-size:13px;background:white}
+table.rozl td small{display:block;font-size:12px;margin-top:4px;color:#526174}.z-faktury b{display:block;font-size:13px}
+table.rozl tr.wylaczony td{opacity:.55}.status-kol{width:190px;font-size:13px}.status-kol .ok{color:#2e7d32;display:inline-flex;gap:4px;align-items:center;font-weight:700}
+.znak-uwaga{display:flex;gap:5px;align-items:flex-start;color:#8a5a00}.link{border:0;background:none;color:var(--blue);font-weight:700;cursor:pointer;padding:4px 0;display:inline-flex;gap:3px;align-items:center;font-size:13px}
+.czerwony{color:#c62828}.szary{color:#617084}
+.zakladki~.workspace.z-podgladem{grid-template-columns:270px minmax(0,1.7fr) minmax(0,1fr)}
+table.rozl select{min-width:240px}
+@media(max-width:1250px){.zakladki~.workspace.z-podgladem{grid-template-columns:270px minmax(0,1fr)}}
+@media(max-width:850px){.zakladki~.workspace.z-podgladem{grid-template-columns:1fr}}
+table.rozl{min-width:820px}table.rozl td:nth-child(4) select{min-width:0;width:128px}table.rozl td:nth-child(2){min-width:190px}
+table.rozl td:nth-child(3) select{min-width:210px}table.rozl td:nth-child(5) input{width:64px}

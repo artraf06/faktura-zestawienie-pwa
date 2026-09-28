@@ -3,7 +3,9 @@
 import type { Pozycja } from "./tableOcr";
 
 export type PdfItem = { str: string; x: number; y: number; w: number };
-type Kolumny = { lpX: number; nazwaX: number; nazwaKoniec: number; ilosc: [number, number]; jm: [number, number] | null };
+type Zakres = [number, number];
+type Kolumny = { lpX: number; nazwaX: number; nazwaKoniec: number; ilosc: Zakres; jm: Zakres | null;
+  cenaN?: Zakres; cenaB?: Zakres; wartN?: Zakres; wartB?: Zakres; vat?: Zakres };
 
 const JEDN = /^(szt|kpl|mb|m2|m3|m²|m³|kg|g|l|ml|op|opak|usł|usl|godz|h|para|pary|rolka|ryza|m|t|km|kompl)\.?,?$/i;
 const KONIEC = /^(razem|podsumowanie|suma|do\s+zapłaty|ogółem|stawka|w\s+tym)/i;
@@ -33,9 +35,20 @@ function naglowek(items: PdfItem[], sk = 1): { k: Kolumny; y: number } | null {
   const nazwaKoniec = inne.length ? Math.min(...inne.map(i => i.x)) - 3 : ilosc.x - 3;
   const srodek = (i: PdfItem) => i.x + i.w / 2;
   const zakres = (i: PdfItem): [number, number] => [i.x - 25 * sk, i.x + i.w + 25 * sk];
+  // kolumny cen: „Cena jedn. netto”, „Wartość brutto” … (dopiski netto/brutto bywają w linii niżej/wyżej)
+  const ceny: Partial<Kolumny> = {};
+  const rodzaj = (i: PdfItem) => {
+    const obok = blisko.filter(j => Math.abs(j.x + j.w / 2 - (i.x + i.w / 2)) < 30 * sk && Math.abs(j.y - i.y) <= 16 * sk);
+    const t = obok.map(j => j.str.toLowerCase()).join(" ") + " " + i.str.toLowerCase();
+    return /brutto/.test(t) ? "B" : "N";
+  };
+  for (const c of cena) { const k = rodzaj(c) === "B" ? "cenaB" : "cenaN"; if (!ceny[k]) ceny[k] = zakres(c); }
+  for (const w of znajdz(/^warto/i)) { const k = rodzaj(w) === "B" ? "wartB" : "wartN"; if (!ceny[k]) ceny[k] = zakres(w); }
+  const vat = znajdz(/^(vat|stawka|st\.?)$/i)[0];
+  if (vat) ceny.vat = zakres(vat);
   return {
     y: Math.min(...blisko.map(i => i.y)),
-    k: { lpX: lp ? srodek(lp) : -1, nazwaX: nazwa.x, nazwaKoniec, ilosc: zakres(ilosc), jm: jm ? zakres(jm) : null },
+    k: { lpX: lp ? srodek(lp) : -1, nazwaX: nazwa.x, nazwaKoniec, ilosc: zakres(ilosc), jm: jm ? zakres(jm) : null, ...ceny },
   };
 }
 
@@ -69,19 +82,31 @@ export function pozycjeZPdf(strony: PdfItem[][], sk = 1, naUlamek?: (y: number, 
         else if (!qty && razem && JEDN.test(razem[2]) && wZakresie(i, kol.ilosc)) { qty = razem[1]; unit = razem[2]; }
         else if (!unit && JEDN.test(s) && (kol.jm ? wZakresie(i, kol.jm) : i.x > kol.ilosc[0])) unit = s;
       }
+      const kwotaW = (z?: Zakres) => {
+        if (!z) return undefined;
+        const it = l.items.find(i => i.x + i.w / 2 >= z[0] && i.x + i.w / 2 <= z[1] && /^\d{1,3}(?:[ \u00a0.]?\d{3})*,\d{2,4}$|^\d+\.\d{2}$/.test(i.str.trim()));
+        return it ? Number(it.str.trim().replace(/[ \u00a0.](?=\d{3}(\D|$))/g, "").replace(",", ".")) : undefined;
+      };
+      const q = Number(qty.replace(",", ".")) || 0;
+      const vatTxt = kol.vat ? l.items.find(i => i.x + i.w / 2 >= kol!.vat![0] && i.x + i.w / 2 <= kol!.vat![1])?.str : undefined;
+      const vatP = vatTxt && /\d/.test(vatTxt) ? Number(vatTxt.replace(/[^\d]/g, "")) / 100 : 0.23;
+      let cenaNetto = kwotaW(kol.cenaN), cenaWyliczona = false;
+      if (cenaNetto === undefined && q) { const w = kwotaW(kol.wartN); if (w !== undefined) { cenaNetto = Math.round((w / q) * 100) / 100; cenaWyliczona = true; } }
+      if (cenaNetto === undefined) { const b = kwotaW(kol.cenaB) ?? (q && kwotaW(kol.wartB) !== undefined ? kwotaW(kol.wartB)! / q : undefined); if (b !== undefined) { cenaNetto = Math.round((b / (1 + vatP)) * 100) / 100; cenaWyliczona = true; } }
+      const ceny = cenaNetto !== undefined ? { cenaNetto, cenaWyliczona } : {};
       const nazwa = l.items.filter((i, idx) => !(jestLp && idx === 0) && i.x < kol!.nazwaKoniec && i.x >= kol!.nazwaX - 120 * sk).map(i => i.str).join(" ").replace(/\s+/g, " ").trim();
       if (jestLp) {
-        wynik.push({ lp: Number(pierwszy.str.replace(".", "")), name: nazwa, quantity: qty.replace(".", ","), unit: unit.replace(/,$/, ""), ...gdzie(l.y) });
+        wynik.push({ lp: Number(pierwszy.str.replace(".", "")), name: nazwa, quantity: qty.replace(".", ","), unit: unit.replace(/,$/, ""), ...gdzie(l.y), ...ceny });
       } else if (wynik.length && nazwa && !qty) {
         const p = wynik[wynik.length - 1];
         p.name = (p.name + " " + nazwa).trim();
       } else if (wynik.length && qty && !wynik[wynik.length - 1].quantity) {
         const p = wynik[wynik.length - 1];
-        p.quantity = qty.replace(".", ","); if (!p.unit) p.unit = unit;
+        p.quantity = qty.replace(".", ","); if (!p.unit) p.unit = unit; Object.assign(p, ceny);
         if (nazwa) p.name = (p.name + " " + nazwa).trim();
       } else if (qty && nazwa && /[a-ząćęłńóśźż]{3}/i.test(nazwa) && !KONIEC.test(nazwa)) {
         // nieczytelny numer Lp, ale jest nazwa i ilość → nowa pozycja
-        wynik.push({ lp: (wynik[wynik.length - 1]?.lp || 0) + 1, name: nazwa.replace(/^\S{1,3}\s+(?=\S{3})/, m => (/\d|[a-z]{1,2}\b/i.test(m) && m.trim().length <= 2 ? "" : m)), quantity: qty.replace(".", ","), unit: unit.replace(/,$/, ""), ...gdzie(l.y) });
+        wynik.push({ lp: (wynik[wynik.length - 1]?.lp || 0) + 1, name: nazwa.replace(/^\S{1,3}\s+(?=\S{3})/, m => (/\d|[a-z]{1,2}\b/i.test(m) && m.trim().length <= 2 ? "" : m)), quantity: qty.replace(".", ","), unit: unit.replace(/,$/, ""), ...gdzie(l.y), ...ceny });
       }
     }
   }

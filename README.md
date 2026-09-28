@@ -23,3 +23,13 @@ Wszystko dzieje się w przeglądarce — dokument nigdzie nie jest wysyłany, ni
 4. Ostatecznie – dawny odczyt całego tekstu.
 
 Wiersze z wątpliwościami (nieczytelna ilość/jednostka/nazwa) są zaznaczone na żółto; najechanie pokazuje powód. Dane należy sprawdzić przed eksportem.
+
+## Rozliczenie umowy (Excel)
+
+Zakładka „Rozliczenie umowy (Excel)”:
+1. Wczytaj Excel z formularzem cenowym. Potrzebne są kolumny: nazwa artykułu, cena jednostkowa netto i kolumny miesięcy.
+2. Dodaj fakturę: PDF (tekstowy albo skan), zdjęcie JPG/PNG albo Word .docx.
+3. Program szuka każdej pozycji faktury w umowie po nazwie i cenie netto. Ilość dopisuje w kolumnie miesiąca z daty wystawienia.
+   Wpis niepewny (inna cena, podobna nazwa, cena wyliczona, przekroczona ilość z umowy) jest w Excelu zaznaczony na żółto, z notatką w komórce.
+4. Faktura trafia do arkusza `_REJESTR_FAKTUR`. Przy próbie ponownego dodania program ostrzega.
+5. „Pobierz uzupełniony Excel” zapisuje plik. Ostatni stan Excela jest też pamiętany w przeglądarce, na wypadek odświeżenia strony.

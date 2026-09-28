@@ -6,7 +6,9 @@ export type Gray = { w: number; h: number; d: Uint8Array };
 export type OcrWord = { t: string; x: number; y: number; w: number; h: number; conf: number; line: number };
 export type OcrFn = (img: Gray, o: { psm: number; whitelist?: string; scale: number }) => Promise<OcrWord[]>;
 // y, wys – położenie wiersza na stronie (ułamek wysokości), strona – nr strony w danym pliku
-export type Pozycja = { lp: number; name: string; quantity: string; unit: string; uwaga?: string; y?: number; wys?: number; strona?: number; kat?: number };
+export type Pozycja = { lp: number; name: string; quantity: string; unit: string; uwaga?: string; y?: number; wys?: number; strona?: number; kat?: number;
+  // do rozliczania umowy: cena jednostkowa netto (z faktury albo wyliczona z wartości)
+  cenaNetto?: number; cenaWyliczona?: boolean };
 
 type Linia = { k: number; c: number; lo: number; hi: number; pos: number };
 type Kol = { xc: number; wid: number; strip: Gray; hs: Gray; head: string; typ: string | null; brutto: boolean; netto: boolean; dy?: number };
@@ -221,6 +223,27 @@ function wytnij(g: Gray, y0: number, y1: number): Gray {
 
 // ---------- główna funkcja ----------
 export async function odczytajTabele(src: Gray, ocr: OcrFn, postep?: (p: number, opis: string) => void): Promise<Pozycja[]> {
+  return (await odczytajFakture(src, ocr, postep, false)).pozycje;
+}
+
+/** Pozycje + (opcjonalnie) tekst nad tabelą – numer i data faktury. */
+export async function odczytajFakture(src: Gray, ocr: OcrFn, postep?: (p: number, opis: string) => void, zNaglowkiem = true): Promise<{ pozycje: Pozycja[]; tekst: string }> {
+  const pozycje = await _odczytaj(src, ocr, postep);
+  let tekst = "";
+  if (zNaglowkiem) {
+    postep?.(97, "Czytam numer i datę faktury…");
+    const gora = Math.max(200, Math.min(src.h, Math.round((ostatniaGoraTabeli ?? src.h * 0.45))));
+    const ws = await ocr(wytnij(src, 0, gora), { psm: 6, scale: 1.5 });
+
+    tekst = linieTekstu(ws).map(l => l.t).join("\n");
+  }
+  return { pozycje, tekst };
+}
+
+let ostatniaGoraTabeli: number | null = null;
+
+async function _odczytaj(src: Gray, ocr: OcrFn, postep?: (p: number, opis: string) => void): Promise<Pozycja[]> {
+  ostatniaGoraTabeli = null;
   const krok = (p: number, o: string) => postep?.(p, o);
   krok(5, "Prostuję zdjęcie…");
   let { hm } = maski(src);
@@ -320,6 +343,7 @@ export async function odczytajTabele(src: Gray, ocr: OcrFn, postep?: (p: number,
     if (!best || score > best.score) best = { score, cols, y0, y1, ybot, lpc, anchors, hb, nazwy };
   }
   if (!best) return [];
+  ostatniaGoraTabeli = best.y0 + 40;
   if (DEBUG) console.log('COLS', JSON.stringify(best.cols.map(c => c.typ + ':' + c.head.slice(0, 20))), 'ANCH', best.anchors.map(a => a.n + '@' + Math.round(a.y)).join(' '));
   krok(40, "Odczytuję kolumny…");
   const { cols, lpc } = best;
@@ -462,7 +486,12 @@ export async function odczytajTabele(src: Gray, ocr: OcrFn, postep?: (p: number,
     const name = (r.nazwa || "").replace(/^[|\[\]{}()_\-—–=~,.:;'"`“”„‘’«»\s]+/, "").replace(/[|\[\]{}_—–=~\s]+$/, "").replace(/\s+/g, " ");
     if (!name) uwaga = "Nie odczytano nazwy";
     else if (!uwaga && Number(r["nazwa?"] ?? 100) < 45) uwaga = "Sprawdź nazwę";
-    return { lp: anchors[i].n, name, quantity: q === null ? "" : String(q).replace(".", ","), unit, uwaga: uwaga || undefined, kat, ...(anchors[i].bot !== undefined ? { y: (best!.y0 + (anchors[i].top! + anchors[i].bot!) / 2) / H, wys: (anchors[i].bot! - anchors[i].top!) / H } : { y: (best!.y0 + ay[i]) / H, wys: rowh / H }) };
+    // cena jednostkowa netto: z kolumny netto (albo „cena” bez dopisku), inaczej wartość netto ÷ ilość
+    let cenaNetto = kwota(r["cena_n"]) ?? kwota(r["cena"]) ?? undefined, cenaWyliczona = false;
+    const wn = kwota(r["wartosc_n"]) ?? (r["cena_b"] ? kwota(r["wartosc"]) : null);
+    if (cenaNetto === undefined && wn && q) { cenaNetto = Math.round((wn / q) * 100) / 100; cenaWyliczona = true; }
+    if (cenaNetto === undefined && kwota(r["cena_b"])) { cenaNetto = Math.round((kwota(r["cena_b"])! / 1.23) * 100) / 100; cenaWyliczona = true; }
+    return { lp: anchors[i].n, name, quantity: q === null ? "" : String(q).replace(".", ","), unit, uwaga: uwaga || undefined, kat, cenaNetto, cenaWyliczona, ...(anchors[i].bot !== undefined ? { y: (best!.y0 + (anchors[i].top! + anchors[i].bot!) / 2) / H, wys: (anchors[i].bot! - anchors[i].top!) / H } : { y: (best!.y0 + ay[i]) / H, wys: rowh / H }) };
   });
   // brakująca jednostka → najczęstsza w tej fakturze (z ostrzeżeniem)
   const licz = new Map<string, number>();

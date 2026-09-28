@@ -2,9 +2,11 @@
 import {useEffect,useMemo,useRef,useState} from "react";
 import {FileImage,FileText,LoaderCircle,Plus,ScanText,Trash2,Download,ShieldCheck,TriangleAlert,Eye,EyeOff} from "lucide-react";
 import type {Worker as TWorker} from "tesseract.js";
-import {odczytajTabele,type Gray,type OcrFn,type OcrWord,type Pozycja} from "./tableOcr";
+import {odczytajTabele,type Gray,type Pozycja} from "./tableOcr";
+import {SZEROKOSC,opcjeTesseract,doSzarosci,ocrPrzez,wczytajPdf} from "./odczyt";
 import {pozycjeZPdf,pozycjeZeSlow,type PdfItem} from "./pdfTabela";
 import Podglad,{type Strona,type Zaznaczenie} from "./Podglad";
+import Rozliczenie from "./Rozliczenie";
 type Row={id:string;lp:number;name:string;quantity:string;unit:string;uwaga?:string;strona?:number;y?:number;wys?:number;kat?:number};
 const id=()=>crypto.randomUUID();
 async function prepareForOcr(source:string){
@@ -100,52 +102,11 @@ function sequenceRows(tableRows:Row[],names:Map<number,string>){
  }
  return ordered;
 }
-const SZEROKOSC=2600;
-// pozwala podać własne ścieżki plików OCR (np. do testów lub pracy offline)
-const opcjeTesseract=()=>((globalThis as {__tesseractOptions?:object}).__tesseractOptions||{});
-// obraz (zdjęcie lub strona PDF) → skala szarości o stałej szerokości
-function doSzarosci(zrodlo:CanvasImageSource,w:number,h:number):Gray{
- const scale=SZEROKOSC/w,W=SZEROKOSC,H=Math.round(h*scale),canvas=document.createElement("canvas");
- canvas.width=W;canvas.height=H;
- const ctx=canvas.getContext("2d",{willReadFrequently:true})!;
- ctx.fillStyle="#fff";ctx.fillRect(0,0,W,H);ctx.imageSmoothingQuality="high";ctx.drawImage(zrodlo,0,0,W,H);
- const px=ctx.getImageData(0,0,W,H).data,d=new Uint8Array(W*H);
- for(let i=0;i<d.length;i++)d[i]=(px[i*4]*299+px[i*4+1]*587+px[i*4+2]*114)/1000;
- return {w:W,h:H,d};
-}
-function szaryDoCanvas(g:Gray,scale:number){
- const src=document.createElement("canvas");src.width=g.w;src.height=g.h;
- const sctx=src.getContext("2d")!,img=sctx.createImageData(g.w,g.h);
- for(let i=0;i<g.d.length;i++){img.data[i*4]=img.data[i*4+1]=img.data[i*4+2]=g.d[i];img.data[i*4+3]=255}
- sctx.putImageData(img,0,0);
- const out=document.createElement("canvas");out.width=Math.round(g.w*scale)+20;out.height=Math.round(g.h*scale)+20;
- const ctx=out.getContext("2d")!;ctx.fillStyle="#fff";ctx.fillRect(0,0,out.width,out.height);ctx.imageSmoothingQuality="high";
- ctx.drawImage(src,10,10,Math.round(g.w*scale),Math.round(g.h*scale));
- return out;
-}
-function ocrPrzez(worker:TWorker):OcrFn{
- let ostatnie="";
- return async(img,o)=>{
-  if(img.w<3||img.h<3)return[];
-  const klucz=`${o.psm}|${o.whitelist||""}`;
-  if(klucz!==ostatnie){await worker.setParameters({tessedit_pageseg_mode:String(o.psm) as never,tessedit_char_whitelist:o.whitelist||""});ostatnie=klucz}
-  const r=await worker.recognize(szaryDoCanvas(img,o.scale),{},{blocks:true});
-  const out:OcrWord[]=[];let nr=0;
-  for(const b of r.data.blocks||[])for(const p of b.paragraphs)for(const l of p.lines){nr++;for(const w of l.words){
-   const t=w.text.trim();if(!t)continue;
-   out.push({t,x:(w.bbox.x0-10)/o.scale,y:(w.bbox.y0-10)/o.scale,w:(w.bbox.x1-w.bbox.x0)/o.scale,h:(w.bbox.y1-w.bbox.y0)/o.scale,conf:w.confidence,line:nr});
-  }}
-  return out;
- };
-}
-async function wczytajPdf(file:File){
- const pdfjs=await import("pdfjs-dist");
- pdfjs.GlobalWorkerOptions.workerSrc=new URL("pdfjs-dist/build/pdf.worker.min.mjs",import.meta.url).toString();
- return pdfjs.getDocument({data:await file.arrayBuffer()}).promise;
-}
 export default function Home(){
  const input=useRef<HTMLInputElement>(null);
  const [rows,setRows]=useState<Row[]>([]),[fileName,setFileName]=useState(""),[busy,setBusy]=useState(false),[progress,setProgress]=useState(0),[message,setMessage]=useState("Wczytaj fakturę, aby rozpocząć");
+ const [tryb,setTryb]=useState<"zestawienie"|"umowa">(()=>{try{return localStorage.getItem("tryb")==="umowa"?"umowa":"zestawienie"}catch{return "zestawienie"}});
+ const zmienTryb=(t:"zestawienie"|"umowa")=>{setTryb(t);try{localStorage.setItem("tryb",t)}catch{/* */}};
  const [podglady,setPodglady]=useState<Strona[]>([]),[pokazPodglad,setPokazPodglad]=useState(true),[wybrany,setWybrany]=useState<string|null>(null);
  const zaznaczenie=useMemo<Zaznaczenie>(()=>{const r=rows.find(r=>r.id===wybrany);return r&&r.strona!==undefined&&r.y!==undefined?{strona:r.strona,y:r.y,wys:r.wys||0.02,kat:r.kat}:null},[rows,wybrany]);
  const zwolnijPodglady=()=>setPodglady(a=>{a.forEach(p=>URL.revokeObjectURL(p.src));return[]});
@@ -290,7 +251,8 @@ export default function Home(){
  }
  return <main className="app-shell">
   <header className="topbar"><div className="brand-mark"><ScanText size={25}/></div><div><h1>Faktura → Zestawienie</h1><p>Odczyt pozycji z JPG i PDF</p></div><div className="privacy"><ShieldCheck size={18}/><span>Dane przetwarzane na tym urządzeniu</span></div></header>
-  <section className={"workspace"+(podglady.length&&pokazPodglad?" z-podgladem":"")}>
+  <nav className="zakladki"><button className={tryb==="zestawienie"?"aktywna":""} onClick={()=>zmienTryb("zestawienie")}>Zestawienie z faktury</button><button className={tryb==="umowa"?"aktywna":""} onClick={()=>zmienTryb("umowa")}>Rozliczenie umowy (Excel)</button></nav>
+  {tryb==="umowa"?<Rozliczenie/>:<section className={"workspace"+(podglady.length&&pokazPodglad?" z-podgladem":"")}>
    <aside className="upload-card"><div className="step">KROK 1</div><h2>Wczytaj fakturę</h2>
     <button className="dropzone" onClick={()=>input.current?.click()} disabled={busy}>{fileName?<FileText size={34}/>:<FileImage size={34}/>}<strong>{fileName||"Wybierz JPG lub PDF"}</strong><span>{fileName?"Kliknij, aby zmienić dokument":"Wyraźny skan daje najlepszy wynik"}</span></button>
     <input ref={input} hidden multiple type="file" accept="image/jpeg,image/png,application/pdf" onChange={e=>e.target.files&&read(Array.from(e.target.files))}/>
@@ -304,6 +266,6 @@ export default function Home(){
     <div className="actions"><div className="action-group"><button className="secondary" onClick={()=>setRows(a=>[...a,{id:id(),lp:a.length+1,name:"",quantity:"1",unit:"szt."}])}><Plus size={18}/>Dodaj pozycję</button><button className="danger" onClick={clearAll} disabled={!rows.length&&!fileName}><Trash2 size={18}/>Usuń wszystko</button></div><div className="export-group"><button className="secondary" onClick={exportWord} disabled={!count}><Download size={18}/>Utwórz Word</button><button className="primary" onClick={exportPdf} disabled={!count}><Download size={18}/>Utwórz PDF</button></div></div>
    </section>
    {podglady.length>0&&pokazPodglad&&<aside className="preview-card"><div className="preview-heading"><span className="step">PODGLĄD</span><h2>Faktura</h2></div><Podglad strony={podglady} zaznacz={zaznaczenie}/></aside>}
-  </section><footer>Po wygenerowaniu pliku możesz go wydrukować albo zapisać w dokumentacji.</footer>
+  </section>}<footer>Po wygenerowaniu pliku możesz go wydrukować albo zapisać w dokumentacji.</footer>
  </main>
 }
