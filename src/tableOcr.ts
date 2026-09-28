@@ -331,9 +331,19 @@ async function _odczytaj(src: Gray, ocr: OcrFn, postep?: (p: number, opis: strin
     if (!lpc || !anchors.length) continue;
     const hb = anchors[0].top ?? Math.max(40, anchors[0].y - 0.4 * anchors[0].h - 4);
     for (const c of cols) {
-      c.head = tekst(await ocr(wytnij(c.strip, 0, hb), { psm: 6, scale: 1 }));
-      for (const typ of ["lp", "nazwa", "ilosc", "cena", "wartosc", "vat", "jm"]) {
-        if (fuzzyHas(c.head, KEYS[typ], typ === "lp" || typ === "jm" ? 0.9 : 0.75)) { c.typ = typ; break; }
+      // nagłówek z zapasem w dół (na wygiętej kartce nagłówki kolumn po prawej bywają niżej)
+      const zapas = anchors.length > 1 ? 0.5 * Math.min(anchors[1].y - anchors[0].y, 120) : 0;
+      const klasyfikuj = () => {
+        for (const typ of ["lp", "nazwa", "ilosc", "cena", "wartosc", "vat", "jm"]) {
+          if (fuzzyHas(c.head, KEYS[typ], typ === "lp" || typ === "jm" ? 0.9 : 0.75)) { c.typ = typ; break; }
+        }
+      };
+      c.head = tekst(await ocr(wytnij(c.strip, 0, hb + zapas), { psm: 6, scale: 1 }));
+      klasyfikuj();
+      if (!c.typ && zapas) {
+        // nagłówek niżej (wygięta kartka) albo za mały wycinek → większy fragment, powiększony
+        c.head = tekst(await ocr(wytnij(c.strip, 0, hb + 3 * zapas), { psm: 6, scale: 1.5 }));
+        klasyfikuj();
       }
       c.brutto = fuzzyHas(c.head, KEYS.brutto); c.netto = fuzzyHas(c.head, KEYS.netto);
     }
@@ -405,8 +415,10 @@ async function _odczytaj(src: Gray, ocr: OcrFn, postep?: (p: number, opis: strin
     // bez nagłówka: ilość = pierwsza kolumna z samymi liczbami całkowitymi
     for (const c of cols) {
       if (c.typ || c.wid >= 400) continue;
+      const cenaX = cols.find(k => k.typ === "cena")?.xc;
+      if (cenaX !== undefined && c.xc > cenaX) continue; // ilość stoi przed ceną
       const ls = linieTekstu(await ocr(wytnij(c.strip, 0, best.ybot), { psm: 6, scale: 1.5, whitelist: "0123456789,.-" }));
-      const cal = ls.filter(l => /^\d{1,4}(,\d)?$/.test(l.t.replace(/\s/g, ""))).length;
+      const cal = ls.filter(l => /^\d{1,4}([.,]\d{1,3})?$/.test(l.t.replace(/\s/g, ""))).length;
       if (ls.length >= 2 && cal >= 0.6 * ls.length && cal >= Math.min(anchors.length, 3) * 0.6) { c.typ = "ilosc"; break; }
     }
   }
@@ -436,7 +448,29 @@ async function _odczytaj(src: Gray, ocr: OcrFn, postep?: (p: number, opis: strin
     }
     ls = ls.filter(l => l.y >= ay[0] - rowh && (key === "jm" ? /[a-ząćęłńóśźż]{1,}/i.test(l.t) && l.t.length <= 8 : /\d/.test(l.t)));
     if (DEBUG) console.log(key, ls.length, "vs", anchors.length, ls.map(l => `${l.t}@${Math.round(l.y)}:${Math.round(l.conf)}`).join(" "));
-    if (key === "ilosc" && ls.length > anchors.length) {
+    const qls = key === "ilosc" ? ls.filter(l => /^\d{1,5}([.,]\d{1,3})?$/.test(l.t.replace(/\s/g, "")) && Number(l.t.replace(/\s/g, "").replace(",", ".")) > 0 && l.y < best.ybot) : [];
+    if (key === "ilosc" && nazwyLacz.size && qls.length > anchors.length && anchors.every(a => a.top === undefined)) {
+      // Lp sklejone z nazwą i część numerów nieczytelna → wiersze wyznaczają ilości (jedna liczba = jeden wiersz),
+      // a nazwy przypisujemy do nich po położeniu
+      const stare = anchors.map((a, i) => ({ n: a.n, y: ay[i], nazwa: rows[i].nazwa, pew: rows[i]["nazwa?"] }));
+      const noweY = qls.map(l => l.y);
+      const przyp = dopasuj(stare.map(x => x.y), noweY, rowh);
+      const ile = new Map<number, number>();
+      przyp.forEach((j, i) => { if (j >= 0) { const o = stare[i].n - j; ile.set(o, (ile.get(o) || 0) + 1); } });
+      const off = [...ile.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 1;
+      const noweRows = noweY.map(() => ({}) as Record<string, string>);
+      przyp.forEach((j, i) => {
+        const x = stare[i];
+        const k = j >= 0 ? j : noweY.reduce((b, y, idx) => (y - 0.6 * rowh <= x.y ? idx : b), 0);
+        if (x.nazwa) noweRows[k].nazwa = ((noweRows[k].nazwa || "") + " " + x.nazwa).trim();
+        if (x.pew) noweRows[k]["nazwa?"] = x.pew;
+      });
+      anchors.splice(0, anchors.length, ...noweY.map((y, i) => ({ n: Math.max(1, i + off), y: y - 10, h: 20 })));
+      ay.splice(0, ay.length, ...noweY);
+      rows.splice(0, rows.length, ...noweRows);
+      ls = qls;
+      if (DEBUG) console.log("WIERSZE_Z_ILOSCI", noweY.length, "off", off);
+    } else if (key === "ilosc" && ls.length > anchors.length) {
       // ilości poniżej ostatniego / powyżej pierwszego Lp → brakujące wiersze
       for (const l of ls) {
         const ost = anchors[anchors.length - 1];
@@ -473,7 +507,7 @@ async function _odczytaj(src: Gray, ocr: OcrFn, postep?: (p: number, opis: strin
     if (q !== null && zgodna(q)) { /* potwierdzona */ }
     else {
       let poprawiona = false;
-      for (const [c, w] of wyrownanie ? [] : pary) {
+      for (const [c, w] of wyrownanie && q !== null ? [] : pary) {
         const n = Math.round(w / c);
         if (n > 0 && Math.abs(n * c - w) <= 0.02 + 0.0006 * w) { uwaga = q === null ? "Ilość wyliczona z ceny i wartości" : `Poprawiono ilość ${q} → ${n} (wartość ÷ cena)`; q = n; poprawiona = true; break; }
       }
@@ -545,6 +579,12 @@ function profil(g: Gray) {
   for (let y = 0; y < g.h; y++) { let s = 0; for (let x = 0; x < g.w; x++) s += g.d[y * g.w + x]; p[y] = s / g.w; }
   return p;
 }
+/** profil poziomych linii tylko w wąskim pasie kolumny (na wygiętej kartce linie są ukośne) */
+function profilPas(g: Gray, x0: number, szer: number) {
+  const x1 = Math.min(g.w, x0 + szer), p = new Float32Array(g.h);
+  for (let y = 0; y < g.h; y++) { let s = 0; for (let x = x0; x < x1; x++) s += g.d[y * g.w + x] ? 1 : 0; p[y] = s / Math.max(1, x1 - x0); }
+  return p;
+}
 function przesuniecie(lpc: Kol, c: Kol, rowh: number, prior: number) {
   const pa = profil(lpc.hs), pb = profil(c.hs);
   prior = Math.round(prior);
@@ -561,29 +601,79 @@ function przesuniecie(lpc: Kol, c: Kol, rowh: number, prior: number) {
 async function laczone(c: Kol, ocr: OcrFn, ybot: number) {
   const ls = linieTekstu(await ocr(wytnij(c.strip, 0, ybot), { psm: 6, scale: 1.5 }));
   const an: Kotwica[] = [], nazwy = new Map<number, string>();
+  if (DEBUG) { const pr = profilPas(c.hs, 0, 90), sp: number[] = []; for (let i = 0; i < pr.length;) { if (pr[i] > 0.3) { let j = i; while (j < pr.length && pr[j] > 0.3) j++; sp.push(Math.round((i + j) / 2)); i = j; } else i++; } console.log("HLINIE", sp.join(" ")); }
+  if (DEBUG) console.log("LACZONE", ls.map(l => `${l.t}@${Math.round(l.y)}x${Math.round(l.x)}`).join(" || "));
   if (ls.length < 2) return { an, nazwy };
   // lewy brzeg numerów Lp jako funkcja wysokości (kartka bywa wygięta)
-  const numR = /^[^0-9A-Za-ząćęłńóśźżĄĆĘŁŃÓŚŹŻ]*\d{1,3}\s*[.)|:]?\s*[A-Za-ząćęłńóśźżĄĆĘŁŃÓŚŹŻ]/;
+  const numR = /^[^0-9A-Za-ząćęłńóśźżĄĆĘŁŃÓŚŹŻ]*\d{1,3}\s*[.)|:\[\](){}!]?\s*[|\[(]?\s*[A-Za-ząćęłńóśźżĄĆĘŁŃÓŚŹŻ]/;
+  const KONIEC_TAB = /ci[ąa]g\s+dalszy|razem|suma|podsumowanie|do\s+zap[łl]aty/i;
   const pk = ls.filter(l => numR.test(l.t));
   const xStart = (y: number) => {
     const bl = pk.map(l => ({ d: Math.abs(l.y - y), x: l.x })).sort((a, b) => a.d - b.d).slice(0, 5).map(v => v.x);
     return bl.length ? mediana(bl) : Math.min(...ls.map(l => l.x));
   };
-  let akt = -1;
-  for (const l of ls) {
-    const poczatek = l.x < xStart(l.y) + 0.6 * l.h;
-    const m = l.t.match(/^[^0-9A-Za-ząćęłńóśźżĄĆĘŁŃÓŚŹŻ]*(\d{1,3})\s*[.)|:]?\s*(\S.*)$/);
-    const p = an[an.length - 1];
-    let n = -1, reszta = l.t;
-    if (m && /^[A-Za-ząćęłńóśźżĄĆĘŁŃÓŚŹŻ]/.test(m[2]) && (!p || (Number(m[1]) > p.n && Number(m[1]) - p.n <= 3))) { n = Number(m[1]); reszta = m[2]; }
-    else if (poczatek && p && /[A-ZĄĆĘŁŃÓŚŹŻ]{2}/.test(l.t)) {
-      n = p.n + 1;
-      reszta = l.t.replace(/^\d{1,3}\s+(?=\S)/, "").replace(/^[^A-ZĄĆĘŁŃÓŚŹŻ\s]{1,4}(?=[A-ZĄĆĘŁŃÓŚŹŻ])/, "").replace(/^\d(?=[A-ZĄĆĘŁŃÓŚŹŻ]{3})/, "");
+  // 1) linie z czytelnym numerem Lp (rosnąco), 2) linie bez numeru, ale zaczynające się przy lewym brzegu
+  //    → numer z położenia między sąsiednimi numerami (np. zamazane „2”, „3” na wygiętej kartce)
+  const L = /A-Za-ząćęłńóśźżĄĆĘŁŃÓŚŹŻ/.source;
+  const numRe = new RegExp(`^[^0-9${L}]*(\\d{1,3})\\s*[.)|:\\[\\](){}!]?\\s*[|\\[(]?\\s*(\\S.*)$`);
+  type Wiersz = { l: typeof ls[number]; poczatek: boolean; n: number; reszta: string };
+  const wl: Wiersz[] = ls.map(l => ({ l, poczatek: l.x < xStart(l.y) + 0.6 * l.h, n: -1, reszta: l.t }));
+  // najdłuższy rosnący ciąg odczytanych numerów (pojedyncze błędy OCR, np. „5” zamiast „3”, odpadają)
+  const kand = wl.map((w, i) => { const m = w.l.t.match(numRe); return m && new RegExp(`^[${L}]`).test(m[2]) ? { i, n: Number(m[1]), reszta: m[2] } : null; }).filter((k): k is { i: number; n: number; reszta: string } => !!k && k.n > 0);
+  const dl = kand.map(() => 1), od = kand.map(() => -1);
+  for (let j = 0; j < kand.length; j++) for (let k = 0; k < j; k++) {
+    const d = kand[j].n - kand[k].n;
+    if (d >= 1 && d <= 4 && dl[k] + 1 > dl[j]) { dl[j] = dl[k] + 1; od[j] = k; }
+  }
+  let kon = dl.indexOf(Math.max(0, ...dl));
+  const lanc: typeof kand = [];
+  while (kon >= 0) { lanc.unshift(kand[kon]); kon = od[kon]; }
+  if (lanc.length >= 2) for (const k of lanc) { wl[k.i].n = k.n; wl[k.i].reszta = k.reszta; }
+  // pierwszy numer podejrzanie „za duży” (wiersze za rzadko) → numer z odstępu do następnego
+  {
+    const pw = wl.filter(w => w.n > 0);
+    const odst = pw.slice(1).map((w, i) => (w.l.y - pw[i].l.y) / (w.n - pw[i].n));
+    const med = odst.length >= 3 ? mediana(odst) : 0;
+    if (med && odst[0] > 1.3 * med) {
+      const nn = pw[1].n - Math.max(1, Math.round((pw[1].l.y - pw[0].l.y) / med));
+      if (nn >= 1 && nn < pw[0].n) pw[0].n = nn;
     }
-    if (n > 0) {
-      reszta = reszta.replace(/^[|\]\[!]+/, "").replace(/^([a-ząćęłńóśźż])(?=[A-ZĄĆĘŁŃÓŚŹŻ]{2})/, x => x.toUpperCase());
-      an.push({ n, y: l.y - l.h / 2, h: l.h }); akt = n; nazwy.set(n, reszta);
-    } else if (akt >= 0 && !poczatek) nazwy.set(akt, nazwy.get(akt) + " " + l.t);
+    // wiersze nad pierwszym numerem (np. „1”, „2” nieczytelne): linie przy lewym brzegu, kolejno w górę
+    const pierwszy = wl.find(w => w.n > 0);
+    if (pierwszy && pierwszy.n > 1) {
+      let n = pierwszy.n, yPop = pierwszy.l.y;
+      for (let i = wl.indexOf(pierwszy) - 1; i >= 0 && n > 1; i--) {
+        const w = wl[i];
+        if (!w.poczatek || !/[A-Za-ząćęłńóśźżĄĆĘŁŃÓŚŹŻ]{3}/.test(w.l.t) || /nazwa|opis|towar|us[łl]ug/i.test(w.l.t)) continue;
+        if (med && yPop - w.l.y < 0.35 * med) continue;
+        n--; w.n = n; w.reszta = w.l.t.replace(/^[^A-Za-ząćęłńóśźżĄĆĘŁŃÓŚŹŻ]+/, ""); yPop = w.l.y;
+      }
+    }
+  }
+  const pewne = wl.filter(w => w.n > 0);
+  const kroki = pewne.slice(1).map((w, i) => (w.l.y - pewne[i].l.y) / (w.n - pewne[i].n)).filter(v => v > 0);
+  const krok = kroki.length ? mediana(kroki) : 0;
+  const czysc = (t: string) => t.replace(/^\d{1,3}\s+(?=\S)/, "").replace(/^[^A-ZĄĆĘŁŃÓŚŹŻ\s]{1,4}(?=[A-ZĄĆĘŁŃÓŚŹŻ])/, "").replace(/^\d(?=[A-ZĄĆĘŁŃÓŚŹŻ]{3})/, "");
+  for (let i = 0; i < wl.length; i++) {
+    const w = wl[i];
+    if (w.n > 0 || !krok || (!w.poczatek && !wl.slice(i + 1).some(v => v.n > 0)) || !/[A-Za-ząćęłńóśźżĄĆĘŁŃÓŚŹŻ]{3}/.test(w.l.t) || KONIEC_TAB.test(w.l.t)) continue;
+    const przed = [...wl.slice(0, i)].reverse().find(v => v.n > 0), po = wl.slice(i + 1).find(v => v.n > 0 && pewne.includes(v));
+    if (!przed) continue;
+    const lk = po ? (po.l.y - przed.l.y) / (po.n - przed.n) : krok; // lokalna wysokość wiersza
+    const est = Math.round(przed.n + (w.l.y - przed.l.y) / lk);
+    const nn = po ? Math.min(Math.max(est, przed.n + 1), po.n - 1) : przed.n + 1;
+    if (nn <= przed.n || (po && nn >= po.n) || wl.some(v => v.n === nn)) continue;
+    // linia bez numeru musi leżeć tam, gdzie powinien zaczynać się brakujący wiersz
+    if (po && Math.abs(w.l.y - (przed.l.y + lk * (nn - przed.n))) > 0.35 * lk) continue;
+    if (!po && !/[A-ZĄĆĘŁŃÓŚŹŻ]{2}/.test(w.l.t)) continue; // za ostatnim numerem – tylko wyraźne nazwy
+    w.n = nn; w.reszta = czysc(w.l.t);
+  }
+  let akt = -1;
+  for (const w of wl) {
+    if (w.n > 0 && !nazwy.has(w.n)) {
+      const reszta = w.reszta.replace(/^[|\]\[!]+/, "").replace(/^([a-ząćęłńóśźż])(?=[A-ZĄĆĘŁŃÓŚŹŻ]{2})/, x => x.toUpperCase()).trim();
+      an.push({ n: w.n, y: w.l.y - w.l.h / 2, h: w.l.h }); akt = w.n; nazwy.set(w.n, reszta);
+    } else if (akt >= 0 && !w.poczatek) nazwy.set(akt, nazwy.get(akt) + " " + w.l.t);
   }
   // tryb łączony tylko, gdy większość wierszy ma czytelny numer Lp
   if (pk.length < 3 || pk.length < 0.5 * an.length) return { an: [], nazwy: new Map<number, string>() };

@@ -45,7 +45,7 @@ export default function Rozliczenie(){
    const dane=await f.arrayBuffer(),klucz=await skrot(dane);
    const w=await czytajFakture(f,(p,o)=>{setPostep(p);setMsg(o)},dajWorker);
    if((globalThis as {__ocrDebug?:boolean}).__ocrDebug)console.log("TEKST FAKTURY:",w.tekst);
-   const {numer,data}=numerIData(w.tekst);
+   const {numer,data}=numerIData(w.tekst,umowa);
    const przypisania=przypisz(w.pozycje,umowa,data);
    const fk:Faktura={plik:f.name,klucz,numer,data,przypisania,podglady:w.podglady,duplikat:null};
    fk.duplikat=juzDodana(umowa,{numer,data,plik:f.name,klucz});
@@ -69,8 +69,13 @@ export default function Rozliczenie(){
   const bez=faktura.przypisania.filter(p=>p.wlacz&&(!p.row||!p.col));
   if(bez.length){setMsg(`Uzupełnij pozycję w umowie i miesiąc dla ${bez.length} zaznaczonych wierszy (albo je odznacz).`);return}
   if(faktura.duplikat&&!window.confirm(faktura.duplikat+"\n\nDopisać mimo to?"))return;
-  const r=wpisz(umowa,faktura.przypisania,{numer:faktura.numer,data:faktura.data,plik:faktura.plik,klucz:faktura.klucz});
-  const blob=await doPliku(umowa);await zapiszLokalnie(umowa.nazwaPliku,await blob.arrayBuffer());
+  setBusy(true);setMsg("Zapisuję do Excela…");
+  let r:{dane:ArrayBuffer;wpisano:number;zolte:number};
+  try{
+   r=await wpisz(umowa,faktura.przypisania,{numer:faktura.numer,data:faktura.data,plik:faktura.plik,klucz:faktura.klucz});
+   const nowa=await wczytajUmowe(r.dane,umowa.nazwaPliku);setUmowa(nowa);await zapiszLokalnie(umowa.nazwaPliku,r.dane);
+  }catch(e){console.error(e);setMsg(e instanceof Error?"Nie udało się zapisać: "+e.message:"Nie udało się zapisać do Excela.");return}
+  finally{setBusy(false)}
   setHistoria(h=>[...h,`${faktura.numer||faktura.plik}: ${r.wpisano} poz.`+(r.zolte?` (${r.zolte} na żółto)`:"")]);
   setZmiany(true);setWersja(v=>v+1);
   faktura.podglady.forEach(p=>URL.revokeObjectURL(p.src));setFaktura(null);

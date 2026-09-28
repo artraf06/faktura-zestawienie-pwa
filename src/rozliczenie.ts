@@ -2,10 +2,11 @@
 // Dopasowanie po nazwie i cenie netto. Niepewne wpisy są zaznaczane na żółto z notatką.
 import type ExcelJS from "exceljs";
 import type { Pozycja } from "./tableOcr";
+import { zapiszZmiany, kolLitery, type Wpis } from "./xlsxZapis";
 
 export type WierszUmowy = { row: number; lp: string; nazwa: string; opis: string; jm: string; ilosc: number | null; cena: number | null; wykorzystano: number };
 export type Miesiac = { col: number; rok: number; mies: number; etykieta: string };
-export type Umowa = { wb: ExcelJS.Workbook; arkusz: ExcelJS.Worksheet; wiersze: WierszUmowy[]; miesiace: Miesiac[]; nazwaPliku: string; kolNazwa: number; kolCena: number; kolLp: number; wNaglowek: number };
+export type Umowa = { dane: ArrayBuffer; wb: ExcelJS.Workbook; arkusz: ExcelJS.Worksheet; wiersze: WierszUmowy[]; miesiace: Miesiac[]; nazwaPliku: string; kolNazwa: number; kolCena: number; kolLp: number; wNaglowek: number };
 export type Propozycja = { wiersz: WierszUmowy; punkty: number; nazwaPkt: number; cenaZgodna: boolean };
 export type Przypisanie = { poz: Pozycja; ilosc: number; row: number | null; col: number | null; pewne: boolean; powod: string; kandydaci: Propozycja[]; wlacz: boolean };
 
@@ -34,7 +35,7 @@ export function liczba(v: ExcelJS.CellValue): number | null {
 export async function wczytajUmowe(dane: ArrayBuffer, nazwaPliku: string): Promise<Umowa> {
   const ExcelJS = (await import("exceljs")).default;
   const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(dane);
+  await wb.xlsx.load(dane.slice(0));
   for (const ws of wb.worksheets) {
     if (ws.name.startsWith("_")) continue;
     for (let r = 1; r <= Math.min(ws.rowCount, 40); r++) {
@@ -78,7 +79,7 @@ export async function wczytajUmowe(dane: ArrayBuffer, nazwaPliku: string): Promi
         wiersze.push({ row: rr, lp: kolLp ? tekstKomorki(w.getCell(kolLp).value) : "", nazwa, opis: kolOpis ? tekstKomorki(w.getCell(kolOpis).value).replace(/\s+/g, " ").trim() : "",
           jm: kolJm ? tekstKomorki(w.getCell(kolJm).value).trim() : "", ilosc: kolIlosc ? liczba(w.getCell(kolIlosc).value) : null, cena, wykorzystano });
       }
-      if (wiersze.length) return { wb, arkusz: ws, wiersze, miesiace, nazwaPliku, kolNazwa, kolCena, kolLp, wNaglowek: r };
+      if (wiersze.length) return { dane, wb, arkusz: ws, wiersze, miesiace, nazwaPliku, kolNazwa, kolCena, kolLp, wNaglowek: r };
     }
   }
   throw new Error("Nie znalazłem tabeli z nazwami towarów i kolumnami miesięcy (np. „nazwa artykułu”, „maj”, „czerwiec”).");
@@ -132,13 +133,18 @@ export function przypisz(pozycje: Pozycja[], umowa: Umowa, data: Date | null): P
   const m = miesiacDla(data, umowa);
   return pozycje.map(poz => {
     let kand = propozycje(poz, umowa);
-    const ilosc = Number(String(poz.quantity).replace(",", ".")) || 0;
+    let ilosc = Number(String(poz.quantity).replace(",", ".")) || 0;
     const [a, b] = kand;
     let pewne = false, powod = "", row: number | null = null;
     if (a && a.punkty >= 0.45 && a.nazwaPkt >= 0.3) {
       // 1) dopasowanie po nazwie (cena jako potwierdzenie)
       row = a.wiersz.row;
-      if (!a.cenaZgodna) powod = poz.cenaNetto === undefined ? "Brak ceny netto na fakturze – sprawdź pozycję"
+      const k = poz.cenaNetto !== undefined && a.wiersz.cena ? Math.round(poz.cenaNetto / a.wiersz.cena) : 0;
+      if (!a.cenaZgodna && k >= 2 && k <= 1000 && Math.abs(poz.cenaNetto! - k * a.wiersz.cena!) <= 0.011 * k) {
+        // na fakturze opakowanie (np. „op.2”), w umowie sztuki: cena = k × cena z umowy → ilość × k
+        powod = `Cena ${zl(poz.cenaNetto!)} = ${k} × ${zl(a.wiersz.cena!)} z umowy – przeliczono ${String(ilosc).replace(".", ",")} op. → ${String(ilosc * k).replace(".", ",")} ${a.wiersz.jm || "szt."}`;
+        ilosc = Math.round(ilosc * k * 1000) / 1000;
+      } else if (!a.cenaZgodna) powod = poz.cenaNetto === undefined ? "Brak ceny netto na fakturze – sprawdź pozycję"
         : `Cena netto z faktury ${zl(poz.cenaNetto)} ≠ w umowie ${a.wiersz.cena === null ? "brak" : zl(a.wiersz.cena)}`;
       else if (a.nazwaPkt < 0.4) powod = "Cena się zgadza, ale nazwa podobna tylko częściowo";
       else if (b && b.cenaZgodna && a.punkty - b.punkty < 0.12) powod = `Dwie podobne pozycje (Lp. ${a.wiersz.lp} i ${b.wiersz.lp}) – sprawdź`;
@@ -168,11 +174,11 @@ export function przypisz(pozycje: Pozycja[], umowa: Umowa, data: Date | null): P
 export const zl = (v: number) => v.toFixed(2).replace(".", ",") + " zł";
 
 // ------------------------------------------------------------------ faktura: numer i data
-export function numerIData(tekst: string): { numer: string; data: Date | null } {
+export function numerIData(tekst: string, umowa?: Umowa): { numer: string; data: Date | null } {
   // PDF dzieli „10-07-2026” / „FS-415581” na kawałki ze spacjami – sklejamy
   const t = tekst.replace(/\r/g, "").replace(/([A-Za-z0-9])([-./])[ \t]+(?=[A-Za-z0-9])/g, "$1$2");
   let numer = "";
-  const m = t.match(/faktura(?:\s+vat)?(?:\s+(?:nr|numer|no\.?))?[\s:.]*([A-Z]{1,5}[\s/-]?\d[\w/.-]{2,30}|\d[\w/.-]{3,30})/i)
+  const m = t.match(/(?:faktura|wydanie\s+zewn\S*(?:\s+z)?)(?:\s+vat)?(?:\s+(?:nr|numer|no\.?))?[\s:.]*([A-Z]{1,5}[\s/-]?\d[\w/.-]{2,30}|\d[\w/.-]{3,30})/i)
     || t.match(/\b(F[SV][\s/-]?\d+\/[\w/.-]+)/i);
   if (m) numer = m[1].trim();
   const daty: { d: Date; i: number }[] = [];
@@ -190,11 +196,21 @@ export function numerIData(tekst: string): { numer: string; data: Date | null } 
     const koniecLinii = low.indexOf("\n", iWyst) < 0 ? low.length : low.indexOf("\n", iWyst);
     po = daty.find(d => d.i > iWyst && d.i < koniecLinii) || daty.filter(d => d.i > iWyst).sort((a, b) => a.i - b.i)[0];
   }
-  return { numer, data: (po || daty[0])?.d ?? null };
+  let data = (po || daty[0])?.d ?? null;
+  if (umowa && data && !miesiacDla(data, umowa)) {
+    // data poza okresem umowy – pewnie błąd odczytu: inna data z faktury w okresie umowy
+    // albo rok źle odczytany o jedną cyfrę (2020 zamiast 2026)
+    const wOkresie = daty.map(x => x.d).filter(d => miesiacDla(d, umowa));
+    const lata = [...new Set(umowa.miesiace.map(m => m.rok))];
+    const rok = String(data.getUTCFullYear());
+    const poprawka = lata.map(r => String(r)).filter(r => [...r].filter((c, i) => c !== rok[i]).length === 1)
+      .map(r => new Date(Date.UTC(Number(r), data!.getUTCMonth(), data!.getUTCDate()))).find(d => miesiacDla(d, umowa));
+    data = poprawka || wOkresie[0] || data;
+  }
+  return { numer, data };
 }
 
 // ------------------------------------------------------------------ zapis do Excela
-const ZOLTY = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF00" } } as const;
 
 export type Faktura = { numer: string; data: Date | null; plik: string; klucz: string };
 
@@ -217,41 +233,30 @@ export function juzDodana(umowa: Umowa, f: Faktura): string | null {
   return null;
 }
 
-export function wpisz(umowa: Umowa, lista: Przypisanie[], f: Faktura): { wpisano: number; zolte: number } {
-  const ws = umowa.arkusz;
-  let wpisano = 0, zolte = 0;
+/** Dopisuje ilości do ORYGINALNEGO pliku (formuły i wygląd zostają) i zwraca nowy plik. */
+export async function wpisz(umowa: Umowa, lista: Przypisanie[], f: Faktura): Promise<{ dane: ArrayBuffer; wpisano: number; zolte: number }> {
+  const wpisy: Wpis[] = [];
   const opisy: string[] = [];
-  const ref = [f.numer || "faktura bez numeru", f.plik].filter(Boolean).join(", ");
+  let zolte = 0;
   for (const p of lista) {
     if (!p.wlacz || !p.row || !p.col || !p.ilosc) continue;
-    const c = ws.getRow(p.row).getCell(p.col);
-    const bylo = liczba(c.value) || 0;
-    c.value = bylo + p.ilosc;
-    const cenaTxt = p.poz.cenaNetto !== undefined ? `, cena netto ${zl(p.poz.cenaNetto)}` : "";
-    const notka = `${ref}: +${String(p.ilosc).replace(".", ",")} (${p.poz.name}${cenaTxt})` + (p.pewne ? "" : `\nDO SPRAWDZENIA: ${p.powod}`);
-    const stara = c.note ? (typeof c.note === "string" ? c.note : c.note.texts?.map(t => t.text).join("") ?? "") : "";
-    c.note = (stara ? stara + "\n" : "") + notka;
-    // styl kopiujemy: ExcelJS współdzieli obiekt stylu między komórkami (bez kopii zażółciłby cały wiersz)
-    if (!p.pewne) { c.style = { ...c.style, fill: ZOLTY as unknown as ExcelJS.Fill }; zolte++; }
-    wpisano++;
+    wpisy.push({ row: p.row, col: p.col, dodaj: p.ilosc, zolty: !p.pewne });
+    if (!p.pewne) zolte++;
     const w = umowa.wiersze.find(x => x.row === p.row);
-    if (w) w.wykorzystano += p.ilosc;
-    opisy.push(`Lp.${w?.lp ?? p.row}+${p.ilosc}`);
+    const cena = p.poz.cenaNetto !== undefined ? ` ${zl(p.poz.cenaNetto)}` : "";
+    opisy.push(`Lp.${w?.lp || p.row} ${kolLitery(p.col)}${p.row} +${String(p.ilosc).replace(".", ",")} (${p.poz.name.slice(0, 40)}${cena})${p.pewne ? "" : " DO SPRAWDZENIA: " + p.powod}`);
   }
-  let rj = umowa.wb.getWorksheet("_REJESTR_FAKTUR");
-  if (!rj) {
-    rj = umowa.wb.addWorksheet("_REJESTR_FAKTUR");
-    rj.addRow(["Klucz", "Numer faktury / KSeF", "Data wystawienia", "Plik źródłowy", "Identyfikatory pozycji", "Data dodania", "Liczba pozycji"]);
-    rj.getRow(1).font = { bold: true };
-  }
-  rj.addRow([f.klucz, f.numer || "brak numeru", f.data ?? "", f.plik, opisy.join(";"), new Date(), wpisano]);
-  umowa.wb.calcProperties.fullCalcOnLoad = true; // Excel przeliczy sumy (RAZEM, ilość do wydania) po otwarciu
-  return { wpisano, zolte };
+  const rejestr = {
+    naglowki: ["Klucz", "Numer faktury / KSeF", "Data wystawienia", "Plik źródłowy", "Identyfikatory pozycji", "Data dodania", "Liczba pozycji"],
+    wiersz: [f.klucz, f.numer || "brak numeru", f.data ?? "", f.plik, opisy.join("; "), new Date(), wpisy.length] as (string | number | Date)[],
+    kolumnaDaty: [3, 6],
+  };
+  const dane = await zapiszZmiany(umowa.dane, umowa.arkusz.name, wpisy, rejestr);
+  return { dane, wpisano: wpisy.length, zolte };
 }
 
 export async function doPliku(umowa: Umowa): Promise<Blob> {
-  const buf = await umowa.wb.xlsx.writeBuffer();
-  return new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  return new Blob([umowa.dane], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
 }
 
 export async function skrot(dane: ArrayBuffer): Promise<string> {
