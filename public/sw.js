@@ -1,4 +1,4 @@
-const CACHE="faktura-pwa-v7";
+const CACHE="faktura-pwa-v9";
 self.addEventListener("install",event=>{
  self.skipWaiting();
  event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(["/","/manifest.webmanifest","/favicon.svg"])));

@@ -8,7 +8,7 @@ export type WierszUmowy = { row: number; lp: string; nazwa: string; opis: string
 export type Miesiac = { col: number; rok: number; mies: number; etykieta: string };
 export type Umowa = { dane: ArrayBuffer; wb: ExcelJS.Workbook; arkusz: ExcelJS.Worksheet; wiersze: WierszUmowy[]; miesiace: Miesiac[]; nazwaPliku: string; kolNazwa: number; kolCena: number; kolLp: number; wNaglowek: number };
 export type Propozycja = { wiersz: WierszUmowy; punkty: number; nazwaPkt: number; cenaZgodna: boolean };
-export type Przypisanie = { poz: Pozycja; ilosc: number; row: number | null; col: number | null; pewne: boolean; powod: string; kandydaci: Propozycja[]; wlacz: boolean };
+export type Przypisanie = { poz: Pozycja; ilosc: number; row: number | null; col: number | null; pewne: boolean; powod: string; kandydaci: Propozycja[]; wlacz: boolean; reczny?: boolean };
 
 const MIES = ["styczen", "luty", "marzec", "kwiecien", "maj", "czerwiec", "lipiec", "sierpien", "wrzesien", "pazdziernik", "listopad", "grudzien"];
 const MIES_PL = ["styczeń", "luty", "marzec", "kwiecień", "maj", "czerwiec", "lipiec", "sierpień", "wrzesień", "październik", "listopad", "grudzień"];
@@ -139,7 +139,7 @@ export function przypisz(pozycje: Pozycja[], umowa: Umowa, data: Date | null): P
     if (a && a.punkty >= 0.45 && a.nazwaPkt >= 0.3) {
       // 1) dopasowanie po nazwie (cena jako potwierdzenie)
       row = a.wiersz.row;
-      const k = poz.cenaNetto !== undefined && a.wiersz.cena ? Math.round(poz.cenaNetto / a.wiersz.cena) : 0;
+      const k = poz.cenaNetto !== undefined && a.wiersz.cena ? (poz.opak && Math.abs(poz.cenaNetto - poz.opak * a.wiersz.cena) <= 0.011 * poz.opak ? poz.opak : Math.round(poz.cenaNetto / a.wiersz.cena)) : 0;
       if (!a.cenaZgodna && k >= 2 && k <= 1000 && Math.abs(poz.cenaNetto! - k * a.wiersz.cena!) <= 0.011 * k) {
         // na fakturze opakowanie (np. „op.2”), w umowie sztuki: cena = k × cena z umowy → ilość × k
         powod = `Cena ${zl(poz.cenaNetto!)} = ${k} × ${zl(a.wiersz.cena!)} z umowy – przeliczono ${String(ilosc).replace(".", ",")} op. → ${String(ilosc * k).replace(".", ",")} ${a.wiersz.jm || "szt."}`;
@@ -162,7 +162,20 @@ export function przypisz(pozycje: Pozycja[], umowa: Umowa, data: Date | null): P
           : `Nazwa nie pasuje – cenę ${zl(poz.cenaNetto)} ma ${poCenie.length} pozycji (Lp. ${poCenie.slice(0, 5).map(k => k.wiersz.lp).join(", ")}${poCenie.length > 5 ? "…" : ""}) – wybierz właściwą`;
         // kandydaci z tą ceną na górze listy
         kand = [...poCenie.slice(0, 12), ...kand.filter(k => !poCenie.some(c => c.wiersz.row === k.wiersz.row))].slice(0, 15);
-      } else powod = "Nie znalazłem tej pozycji w umowie (ani po nazwie, ani po cenie) – wybierz ręcznie";
+      } else {
+        // cena za opakowanie (np. „op.2” po 9,24 zł), w umowie za sztukę (4,62 zł) → szukamy wielokrotności
+        const ks = poz.opak ? [poz.opak] : [2, 3, 4, 5, 6, 8, 10, 12, 20, 24, 25, 50, 100];
+        const wiel = umowa.wiersze.flatMap(w => ks.filter(k => w.cena && Math.abs(w.cena * k - poz.cenaNetto!) <= 0.011 * k).map(k => ({ w, k, pkt: podobienstwo(poz.name, w.nazwa, w.opis) })))
+          .sort((x, y) => y.pkt - x.pkt || x.k - y.k);
+        const naj = wiel[0];
+        if (naj && (poz.opak || wiel.length === 1 || naj.pkt >= 0.25)) {
+          row = naj.w.row;
+          powod = `Nazwa nie pasuje – cena ${zl(poz.cenaNetto)} = ${naj.k} × ${zl(naj.w.cena!)} (Lp. ${naj.w.lp}) – przeliczono ${String(ilosc).replace(".", ",")} op. → ${String(ilosc * naj.k).replace(".", ",")} ${naj.w.jm || "szt."}${wiel.length > 1 ? `; inne możliwe: Lp. ${wiel.slice(1, 4).map(x => x.w.lp).join(", ")}` : ""}`;
+          ilosc = Math.round(ilosc * naj.k * 1000) / 1000;
+          const tu = wiel.map(x => ({ wiersz: x.w, nazwaPkt: x.pkt, cenaZgodna: false, punkty: x.pkt + 0.3 }));
+          kand = [...tu.slice(0, 8), ...kand.filter(k => !tu.some(c => c.wiersz.row === k.wiersz.row))].slice(0, 15);
+        } else powod = "Nie znalazłem tej pozycji w umowie (ani po nazwie, ani po cenie) – wybierz ręcznie";
+      }
     } else powod = "Nie znalazłem tej pozycji w umowie, a na fakturze brak ceny netto – wybierz ręcznie";
     if (pewne && poz.cenaWyliczona) { pewne = false; powod = "Cena netto wyliczona z wartości / brutto – sprawdź"; }
     if (pewne && poz.uwaga) { pewne = false; powod = `Odczyt faktury: ${poz.uwaga.toLowerCase()}`; }

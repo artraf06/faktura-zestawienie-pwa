@@ -1,5 +1,5 @@
 import {useEffect,useMemo,useRef,useState} from "react";
-import {FileSpreadsheet,FileText,LoaderCircle,Download,Check,TriangleAlert,RotateCcw,Plus} from "lucide-react";
+import {FileSpreadsheet,FileText,LoaderCircle,Download,Check,TriangleAlert,RotateCcw,Plus,Maximize2,Minimize2,PencilLine} from "lucide-react";
 import type {Worker as TWorker} from "tesseract.js";
 import Podglad,{type Strona,type Zaznaczenie,type Znacznik} from "./Podglad";
 import ExcelPodglad,{type Oczekujacy} from "./ExcelPodglad";
@@ -25,6 +25,8 @@ export default function Rozliczenie(){
  const [busy,setBusy]=useState(false),[postep,setPostep]=useState(0),[msg,setMsg]=useState("Wczytaj Excel z formularzem cenowym (umową).");
  const [historia,setHistoria]=useState<string[]>([]),[zmiany,setZmiany]=useState(false),[wybrany,setWybrany]=useState<number|null>(null);
  const [widok,setWidok]=useState<"oba"|"faktura"|"excel">("oba");
+ const [duzy,setDuzy]=useState(false);
+ useEffect(()=>{if(!duzy)return;const k=(e:KeyboardEvent)=>{if(e.key==="Escape")setDuzy(false)};window.addEventListener("keydown",k);return()=>window.removeEventListener("keydown",k)},[duzy]);
 
  useEffect(()=>{(async()=>{const z=await wczytajLokalnie();if(!z)return;try{const u=await wczytajUmowe(z.dane,z.nazwa);setUmowa(u);setMsg(`Przywrócono „${z.nazwa}” z ${new Date(z.kiedy).toLocaleString("pl-PL")}. Możesz dodawać kolejne faktury.`)}catch{/* stary zapis */}})()},[]);
 
@@ -100,6 +102,34 @@ export default function Rozliczenie(){
  const oczekujace:Oczekujacy[]=useMemo(()=>faktura?faktura.przypisania.flatMap((p,i)=>p.wlacz&&p.row&&p.col&&p.ilosc?[{row:p.row,col:p.col,ilosc:p.ilosc,pewne:!stan(p).zolty,idx:i}]:[]):[],
   // eslint-disable-next-line react-hooks/exhaustive-deps
   [faktura,umowa,wersja]);
+ // wpisy ręczne (gdy program źle odczytał albo pozycji nie ma na fakturze)
+ const reczna=(row:number|null,col:number|null,ilosc:number):Przypisanie=>({poz:{lp:0,name:"Wpis ręczny",quantity:"",unit:""},ilosc,row,col,pewne:true,powod:"",kandydaci:[],wlacz:true,reczny:true});
+ const pusta=():Faktura=>({plik:"wpis ręczny",klucz:"reczny-"+Date.now(),numer:"",data:null,przypisania:[],podglady:[],duplikat:null});
+ function dodajRecznie(){
+  if(!umowa)return;
+  const f=faktura||pusta();
+  const col=miesiacDla(f.data,umowa)?.col??f.przypisania.find(p=>p.col)?.col??null;
+  setFaktura({...f,przypisania:[...f.przypisania,reczna(null,col,0)]});setWybrany(f.przypisania.length);
+  setTimeout(()=>document.querySelector(`tr[data-poz="${f.przypisania.length}"] select`)?.scrollIntoView({block:"center",behavior:"smooth"}),50);
+ }
+ /** Kliknięcie komórki miesiąca w podglądzie Excela: ustaw, ile dopisać do tej komórki. */
+ function ustawKomorke(row:number,col:number,ilosc:number){
+  if(!umowa)return;
+  const f=faktura||pusta();
+  const lista=f.przypisania.map(p=>({...p}));
+  const tu=lista.map((p,i)=>({p,i})).filter(x=>x.p.wlacz&&x.p.row===row&&x.p.col===col);
+  const suma=tu.reduce((a,x)=>a+x.p.ilosc,0);
+  if(Math.abs(suma-ilosc)<1e-9)return;
+  if(!tu.length){ if(ilosc>0){lista.push(reczna(row,col,ilosc));setWybrany(lista.length-1)} }
+  else{
+   const ost=tu[tu.length-1].p,reszta=suma-ost.ilosc;
+   if(ilosc-reszta>0){ost.ilosc=Math.round((ilosc-reszta)*1000)/1000;ost.pewne=ost.reczny?true:ost.pewne}
+   else{ // mniej niż pozostałe pozycje – zeruję od końca
+    let zostalo=ilosc;for(const x of tu){const v=Math.min(x.p.ilosc,zostalo);x.p.ilosc=v;x.p.wlacz=v>0;zostalo-=v}
+   }
+  }
+  setFaktura({...f,przypisania:lista});
+ }
  const wybierz=(i:number)=>{setWybrany(i);document.querySelector(`tr[data-poz="${i}"]`)?.scrollIntoView({block:"nearest",behavior:"smooth"})};
  const maFakture=!!faktura?.podglady.length;
  const pokazFakture=maFakture&&widok!=="excel",pokazExcel=!!umowa&&(widok!=="faktura"||!maFakture);
@@ -132,38 +162,40 @@ export default function Rozliczenie(){
     </div>}
    </div>
    {faktura?.duplikat&&<div className="ostrzezenie"><TriangleAlert size={18}/>{faktura.duplikat}</div>}
-   <div className="table-wrap"><table className="rozl"><thead><tr><th/><th>Z faktury</th><th>Pozycja w umowie</th><th>Miesiąc</th><th>Ilość</th><th>Status</th></tr></thead><tbody>
-    {!faktura?<tr><td colSpan={6} className="empty">{umowa?"Dodaj fakturę – tu pojawią się jej pozycje dopasowane do umowy.":"Najpierw wczytaj Excel z umową."}</td></tr>:
+   <div className="table-wrap"><table className="rozl"><thead><tr><th/><th>Z faktury</th><th>Pozycja w umowie</th><th>Ilość</th><th>Miesiąc</th><th>Status</th></tr></thead><tbody>
+    {!faktura?<tr><td colSpan={6} className="empty">{umowa?<>Dodaj fakturę – tu pojawią się jej pozycje dopasowane do umowy.<br/><button className="secondary maly dopisz" onClick={dodajRecznie}><PencilLine size={15}/>albo dopisz ilość ręcznie</button></>:"Najpierw wczytaj Excel z umową."}</td></tr>:
      faktura.przypisania.map((p,i)=>{
       const {w,zostalo,przekroczy,zolty}=stan(p);
       return <tr key={i} data-poz={i} className={[zolty?"uwaga":"",!p.wlacz?"wylaczony":"",wybrany===i?"wybrany":""].join(" ")} onClick={()=>setWybrany(i)}>
        <td><input type="checkbox" checked={p.wlacz} onChange={e=>zmien(i,{wlacz:e.target.checked})} aria-label="Wpisz tę pozycję"/></td>
-       <td className="z-faktury"><b>{p.poz.name||"—"}</b><small>{p.poz.quantity} {p.poz.unit} · netto {p.poz.cenaNetto!==undefined?zl(p.poz.cenaNetto):"?"}{p.poz.cenaWyliczona?" (wyliczona)":""}</small></td>
-       <td><select value={p.row??""} onChange={e=>{const row=e.target.value?Number(e.target.value):null;const k=p.kandydaci.find(k=>k.wiersz.row===row);zmien(i,{row,wlacz:!!row,pewne:!!row&&!!k?.cenaZgodna,powod:row?(k?.cenaZgodna?"":"Wybrane ręcznie – cena inna niż w umowie"):""})}}>
+       <td className="z-faktury">{p.reczny?<><b className="reczny"><PencilLine size={14}/>Wpis ręczny</b><small>wybierz pozycję, miesiąc i ilość</small></>:<><b>{p.poz.name||"—"}</b><small>{p.poz.quantity} {p.poz.unit} · netto {p.poz.cenaNetto!==undefined?zl(p.poz.cenaNetto):"?"}{p.poz.cenaWyliczona?" (wyliczona)":""}</small></>}</td>
+       <td><select value={p.row??""} onChange={e=>{const row=e.target.value?Number(e.target.value):null;const k=p.kandydaci.find(k=>k.wiersz.row===row);zmien(i,{row,wlacz:!!row,pewne:p.reczny?true:!!row&&!!k?.cenaZgodna,powod:row&&!p.reczny?(k?.cenaZgodna?"":"Wybrane ręcznie – cena inna niż w umowie"):""})}}>
          <option value="">— nie wpisuj / wybierz —</option>
          {p.kandydaci.length>0&&<optgroup label="Najbardziej podobne">{p.kandydaci.map(k=><option key={"k"+k.wiersz.row} value={k.wiersz.row}>{k.cenaZgodna?"✓ ":""}{k.wiersz.lp}. {k.wiersz.nazwa.slice(0,60)} · {k.wiersz.cena!==null?zl(k.wiersz.cena):"?"}</option>)}</optgroup>}
          <optgroup label="Wszystkie pozycje umowy">{opcjeWierszy.map(o=><option key={o.row} value={o.row}>{o.opis}</option>)}</optgroup>
         </select>
         {w&&<small className="szary">w umowie {w.cena!==null?zl(w.cena):"brak ceny"} · {w.jm} · zostało {zostalo??"?"}{przekroczy?<b className="czerwony"> – przekroczy ilość z umowy!</b>:null}</small>}</td>
+       <td className="ilosc-kol"><input className="short ilosc" inputMode="decimal" value={String(p.ilosc).replace(".",",")} onChange={e=>zmien(i,{ilosc:Number(e.target.value.replace(",","."))||0})} onFocus={e=>e.target.select()}/><small className="szary">{w?.jm||p.poz.unit||""}</small></td>
        <td><select value={p.col??""} onChange={e=>zmien(i,{col:e.target.value?Number(e.target.value):null})}><option value="">—</option>{umowa!.miesiace.map(m=><option key={m.col} value={m.col}>{m.etykieta}</option>)}</select></td>
-       <td><input className="short" value={String(p.ilosc).replace(".",",")} onChange={e=>zmien(i,{ilosc:Number(e.target.value.replace(",","."))||0})}/></td>
        <td className="status-kol">{!p.wlacz?<span className="szary">pominięta</span>:zolty?<><span className="znak-uwaga"><TriangleAlert size={14}/>{przekroczy?"Przekroczy ilość z umowy":p.powod||"Do sprawdzenia"}</span>{!p.pewne&&<button className="link" onClick={e=>{e.stopPropagation();zmien(i,{pewne:true,powod:""})}}><Check size={13}/>Sprawdzone</button>}</>:<span className="ok"><Check size={14}/>pewne</span>}</td>
       </tr>})}
    </tbody></table></div>
-   {faktura&&<div className="actions"><div className="action-group"><button className="secondary" onClick={()=>{faktura.podglady.forEach(p=>URL.revokeObjectURL(p.src));setFaktura(null)}}>Anuluj tę fakturę</button></div>
+   {faktura&&<div className="actions"><div className="action-group"><button className="secondary" onClick={()=>{faktura.podglady.forEach(p=>URL.revokeObjectURL(p.src));setFaktura(null)}}>Anuluj{faktura.podglady.length?" tę fakturę":""}</button><button className="secondary" onClick={dodajRecznie}><PencilLine size={16}/>Dopisz pozycję ręcznie</button></div>
     <div className="export-group"><button className="primary" onClick={zatwierdz} disabled={!faktura.przypisania.some(p=>p.wlacz)}><Plus size={18}/>Wpisz do Excela ({faktura.przypisania.filter(p=>p.wlacz).length})</button></div></div>}
   </section>
-  {umowa&&<aside className="preview-card">
+  {umowa&&duzy&&<div className="tlo-duzy" onClick={()=>setDuzy(false)}/>}
+  {umowa&&<aside className={"preview-card"+(duzy?" duzy":"")}>
    <div className="preview-heading podglad-zakladki"><span className="step">PODGLĄD</span>
     {maFakture?<div className="przelacznik">
      <button className={widok==="oba"?"aktywna":""} onClick={()=>setWidok("oba")}>Faktura + Excel</button>
      <button className={widok==="faktura"?"aktywna":""} onClick={()=>setWidok("faktura")}>Faktura</button>
      <button className={widok==="excel"?"aktywna":""} onClick={()=>setWidok("excel")}>Excel</button>
     </div>:<h2>Excel</h2>}
+    <button className="secondary maly powieksz" onClick={()=>setDuzy(d=>!d)} title={duzy?"Zmniejsz (Esc)":"Powiększ na cały ekran"}>{duzy?<><Minimize2 size={15}/>Zmniejsz</>:<><Maximize2 size={15}/>Powiększ</>}</button>
    </div>
    <div className={"podglad-dzielony"+(pokazFakture&&pokazExcel?" oba":"")}>
     {pokazFakture&&<div className="czesc"><Podglad strony={faktura!.podglady} zaznacz={zazn} znaczniki={znaczniki} onZnacznik={wybierz}/></div>}
-    {pokazExcel&&<div className="czesc"><ExcelPodglad umowa={umowa} wersja={wersja} oczekujace={oczekujace} wybrany={wybrany} onWybierz={wybierz}/></div>}
+    {pokazExcel&&<div className="czesc"><ExcelPodglad umowa={umowa} wersja={wersja} oczekujace={oczekujace} wybrany={wybrany} onWybierz={wybierz} onUstaw={ustawKomorke} domyslnyMiesiac={faktura?miesiacDla(faktura.data,umowa)?.col??faktura.przypisania.find(p=>p.col)?.col??null:null}/></div>}
    </div>
   </aside>}
  </section>;
